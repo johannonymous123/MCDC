@@ -446,7 +446,7 @@ def surface(type_, bc="interface", **kw):
 
     Parameters
     ----------
-    type\_ : {"plane-x", "plane-y", "plane-z", "plane", "cylinder-x", "cylinder-y",
+    type_ : {"plane-x", "plane-y", "plane-z", "plane", "cylinder-x", "cylinder-y",
               "cylinder-z", "sphere", "quadric"}
         Surface type.
     bc : {"interface", "vacuum", "reflective"}
@@ -481,6 +481,7 @@ def surface(type_, bc="interface", **kw):
     """
     # Make surface card
     card = SurfaceCard()
+    
 
     # Set ID
     card.ID = len(global_.input_deck.surfaces)
@@ -648,7 +649,7 @@ def cell(region=None, fill=None, translation=(0.0, 0.0, 0.0), rotation=(0.0, 0.0
 
     # Make cell card
     card = CellCard()
-
+    
     # Set ID
     card.ID = len(global_.input_deck.cells)
 
@@ -1547,6 +1548,158 @@ def iQMC(
     card["iqmc"]["krylov_restart"] = krylov_restart
 
 
+def hybridMC(
+    phi0=None,
+    g=None,
+    t=None,
+    x=None,
+    y=None,
+    z=None,
+    source0=None,
+    source_x0=None,
+    source_y0=None,
+    source_z0=None,
+    krylov_restart=None,
+    fixed_source=None,
+    maxit=25,
+    tol=1e-6,
+    fixed_source_solver="source iteration",
+    sample_method="halton",
+    mode="fixed",
+    scores=[],
+):
+    """
+    Activate the iterative Quasi-Monte Carlo (hybridMC) neutron transport method.
+
+    Parameters
+    ----------
+    phi0 : array_like[float], optional
+        Initial scalar flux approximation (default None).
+    g : array_like[float], optional
+        Energy values that define energy mesh (default None).
+    t : array_like[float], optional
+        Time values that define time mesh (default None).
+    x : array_like[float], optional
+        x-coordinates that define spacial mesh (default None).
+    y : array_like[float], optional
+        y-coordinates that define spacial mesh (default None).
+    z : array_like[float], optional
+        z-coordinates that define spacial mesh (default None).
+
+    Other Parameters
+    ----------
+    source0 : array_like[float], optional
+        Initial particle source (default None).
+    source_x0 : array_like[float], optional
+        Initial source for source-x (default None).
+    source_y0 : array_like[float], optional
+        Initial source for source-y (default None).
+    source_z0 : array_like[float], optional
+        Initial source for source-z (default None).
+    krylov_restart : int, optional
+        Max number of iterations for Krylov iteration (default same as maxit).
+    fixed_source : array_like[float], optional
+        Fixed source (default same as phi0).
+    iterations_max : int, optional
+        Maximum number of iterations allowed before termination (default 25).
+    tol : float, optional
+        Convergence tolerance (default 1e-6).
+    fixed_source_solver : {'source iteration', 'gmres'}
+        Deterministic solver for fixed-source problem (default "source iteration").
+        Solver for k-eigenvalue problem (default "power_iteration").
+    sample_method: {'halton', 'random'}
+        Method for generating particle samples.
+    mode: {'fixed', batched}
+        Set hybridMC to run with a fixed-seed or batched iteration scheme.
+    scores : list of str, optional
+        List of tallies to score in addition to the mandatory flux and
+        source strength. Additional scores include
+        {'source-x', 'source-y', 'source-z', 'fission-power'} (default empty list).
+
+    Returns
+    -------
+        None (in-place card alterations).
+
+    Notes
+    -----
+        phi0 is used to estimate the initial source strength. If source0 is
+        provided, source0 will be used instead of phi0. Either phi0 or
+        source0 must be provided as they are used to initialize particle
+        weights.
+    """
+
+    card = global_.input_deck.technique
+    card["hybridMC"] = True
+    card["hybrid"]["tol"] = tol
+    card["hybrid"]["iterations_max"] = maxit
+    card["hybrid"]["sample_method"] = sample_method
+    card["hybrid"]["mode"] = mode
+
+    # Set mesh
+    if g is not None:
+        card["hybrid"]["mesh"]["g"] = g
+    if t is not None:
+        card["hybrid"]["mesh"]["t"] = t
+    if x is not None:
+        card["hybrid"]["mesh"]["x"] = x
+    if y is not None:
+        card["hybrid"]["mesh"]["y"] = y
+    if z is not None:
+        card["hybrid"]["mesh"]["z"] = z
+
+    ax_expand = []
+    if g is None:
+        ax_expand.append(0)
+    if t is None:
+        ax_expand.append(1)
+    if x is None:
+        ax_expand.append(2)
+    if y is None:
+        ax_expand.append(3)
+    if z is None:
+        ax_expand.append(4)
+    for ax in ax_expand:
+        phi0 = np.expand_dims(phi0, axis=ax)
+        if fixed_source is not None:
+            fixed_source = np.expand_dims(fixed_source, axis=ax)
+        else:
+            fixed_source = np.zeros_like(phi0)
+
+    if krylov_restart is None:
+        krylov_restart = maxit
+
+    if source0 is None:
+        source0 = np.zeros_like(phi0)
+
+    score_list = card["hybrid"]["score_list"]
+    for name in scores:
+        score_list[name] = True
+
+    if score_list["source-x"]:
+        card["hybrid"]["krylov_vector_size"] += 1
+        if source_x0 is None:
+            source_x0 = np.zeros_like(phi0)
+
+    if score_list["source-y"]:
+        card["hybrid"]["krylov_vector_size"] += 1
+        if source_y0 is None:
+            source_y0 = np.zeros_like(phi0)
+
+    if score_list["source-z"]:
+        card["hybrid"]["krylov_vector_size"] += 1
+        if source_z0 is None:
+            source_z0 = np.zeros_like(phi0)
+
+    card["hybrid"]["score"]["flux"] = phi0
+    card["hybrid"]["score"]["source-x"] = source_x0
+    card["hybrid"]["score"]["source-y"] = source_y0
+    card["hybrid"]["score"]["source-z"] = source_z0
+    card["hybrid"]["source"] = source0
+    card["hybrid"]["fixed_source"] = fixed_source
+    card["hybrid"]["fixed_source_solver"] = fixed_source_solver
+    card["hybrid"]["krylov_restart"] = krylov_restart
+
+
 def weight_roulette(w_threshold=0.2, w_survive=1.0):
     """
     Activate weight roulette technique.
@@ -1808,8 +1961,8 @@ def make_particle_bank(size):
         ("rng_seed", np.uint64),
     ]
     iqmc_struct = [("w", np.float64, (1,))]
-    struct += [("iqmc", iqmc_struct)]
-
+    struct += [("iqmc", iqmc_struct)]    
+    struct += [("hybrid", iqmc_struct)]
     bank = np.zeros(size, dtype=np.dtype(struct))
 
     # Set default values

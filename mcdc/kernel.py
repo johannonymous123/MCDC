@@ -1025,6 +1025,8 @@ def get_particle(P_arr, bank, mcdc):
 
     if mcdc["technique"]["iQMC"]:
         P["iqmc"]["w"] = P_rec["iqmc"]["w"]
+    if mcdc["technique"]["hybridMC"]:
+        P["hybrid"]["w"] = P_rec["hybrid"]["w"]    
 
     P["alive"] = True
 
@@ -1756,6 +1758,7 @@ def copy_recordlike(P_new_arr, P_rec_arr):
     P_new["w"] = P_rec["w"]
     P_new["rng_seed"] = P_rec["rng_seed"]
     P_new["iqmc"]["w"] = P_rec["iqmc"]["w"]
+    P_new["hybrid"]["w"] = P_rec["hybrid"]["w"]
 
 
 @njit
@@ -1780,6 +1783,7 @@ def copy_particle(P_new_arr, P_arr):
     P_new["event"] = P["event"]
     P_new["rng_seed"] = P["rng_seed"]
     P_new["iqmc"]["w"] = P["iqmc"]["w"]
+    P_new["hybrid"]["w"] = P["hybrid"]["w"]
 
 
 @njit
@@ -3614,6 +3618,8 @@ def weight_roulette(P_arr, mcdc):
         P["w"] = w_survive
         if mcdc["technique"]["iQMC"]:
             P["iqmc"]["w"][:] = w_survive
+        if mcdc["technique"]["hybridMC"]:
+                P["hybrid"]["w"][:] = w_survive
     else:
         P["alive"] = False
 

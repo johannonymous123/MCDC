@@ -224,6 +224,8 @@ def make_type_particle(input_deck):
 
     # Get modes
     iQMC = input_deck.technique["iQMC"]
+    hybridMC = input_deck.technique["hybridMC"]
+
 
     # =========================================================================
     # iQMC
@@ -233,9 +235,11 @@ def make_type_particle(input_deck):
     G = 1
 
     # iQMC vector of weights
-    if iQMC:
+    if iQMC or hybridMC:
         G = input_deck.materials[0].G
+        
     iqmc_struct = [("w", float64, (G,))]
+    struct += [("hybrid", iqmc_struct)] 
     struct += [("iqmc", iqmc_struct)]
 
     # Save type
@@ -262,6 +266,8 @@ def make_type_particle_record(input_deck):
 
     # Get modes
     iQMC = input_deck.technique["iQMC"]
+    hybridMC = input_deck.technique["hybridMC"]
+
 
     # =========================================================================
     # iQMC
@@ -271,9 +277,10 @@ def make_type_particle_record(input_deck):
     G = 1
 
     # iQMC vector of weights
-    if iQMC:
+    if iQMC or hybridMC:
         G = input_deck.materials[0].G
     iqmc_struct = [("w", float64, (G,))]
+    struct += [("hybrid", iqmc_struct)]
     struct += [("iqmc", iqmc_struct)]
 
     # Save type
@@ -1062,6 +1069,16 @@ iqmc_score_list = (
     "fission-source",
 )
 
+hybrid_score_list = (
+    "flux",
+    "effective-scattering",
+    "effective-fission",
+    "source-x",
+    "source-y",
+    "source-z",
+    "fission-power",
+    "fission-source",
+)
 
 def make_type_technique(input_deck):
     global technique
@@ -1089,6 +1106,7 @@ def make_type_technique(input_deck):
         ("weight_window", bool_),
         ("weight_roulette", bool_),
         ("iQMC", bool_),
+        ("hybridMC", bool_),
         ("IC_generator", bool_),
         ("branchless_collision", bool_),
         ("domain_decomposition", bool_),
@@ -1142,19 +1160,19 @@ def make_type_technique(input_deck):
     # Quasi Monte Carlo
     # =========================================================================
     iqmc_list = []
-
+    N_particle_iqmc = N_particle
     # Mesh (for qmc source tallies)
     if card["iQMC"]:
         mesh, Nx, Ny, Nz, Nt, Nmu, N_azi = make_type_mesh_(card["iqmc"]["mesh"])
         Ng = G
         N_dim = 6  # group, x, y, z, mu, phi
     else:
-        Nx = Ny = Nz = Nt = Nmu = N_azi = N_particle = Ng = N_dim = 0
+        Nx = Ny = Nz = Nt = Nmu = N_azi = N_particle_iqmc = Ng = N_dim = 0
 
     iqmc_list += [("mesh", mesh)]
 
     #  make low-discprenecy sequence array
-    work_size = get_work_size(N_particle)
+    work_size = get_work_size(N_particle_iqmc)
     iqmc_list += [("samples", float64, (work_size, N_dim))]
     # make global arrays
     iqmc_list += [("fixed_source", float64, (Ng, Nt, Nx, Ny, Nz))]
@@ -1216,6 +1234,86 @@ def make_type_technique(input_deck):
     ]
 
     struct += [("iqmc", into_dtype(iqmc_list))]
+
+    # =========================================================================
+    # Hybrid Monte Carlo
+    # =========================================================================
+    hybrid_list = []
+    N_particle_hybrid = N_particle
+    # Mesh (for qmc source tallies)
+    if card["hybridMC"]:
+        mesh, Nx, Ny, Nz, Nt, Nmu, N_azi = make_type_mesh_(card["hybrid"]["mesh"])
+        Ng = G
+        N_dim = 6  # group, x, y, z, mu, phi
+    else:
+        Nx = Ny = Nz = Nt = Nmu = N_azi = N_particle_hybrid = Ng = N_dim = 0
+
+    hybrid_list += [("mesh", mesh)]
+
+    #  make low-discprenecy sequence array
+    work_size = get_work_size(N_particle_hybrid)
+    hybrid_list += [("samples", float64, (work_size, N_dim))]
+    # make global arrays
+    hybrid_list += [("fixed_source", float64, (Ng, Nt, Nx, Ny, Nz))]
+    hybrid_list += [("material_idx", int64, (Nt, Nx, Ny, Nz))]
+    hybrid_list += [("source", float64, (Ng, Nt, Nx, Ny, Nz))]
+    total_size = (Ng * Nt * Nx * Ny * Nz) * card["hybrid"]["krylov_vector_size"]
+    hybrid_list += [(("total_source"), float64, (total_size,))]
+
+    # Make scores
+    scores_shapes = [
+        ["flux", (Ng, Nt, Nx, Ny, Nz)],
+        ["effective-scattering", (Ng, Nt, Nx, Ny, Nz)],
+        ["effective-fission", (Ng, Nt, Nx, Ny, Nz)],
+        ["source-x", (Ng, Nt, Nx, Ny, Nz)],
+        ["source-y", (Ng, Nt, Nx, Ny, Nz)],
+        ["source-z", (Ng, Nt, Nx, Ny, Nz)],
+        ["fission-power", (Ng, Nt, Nx, Ny, Nz)],  # SigmaF*phi
+        ["fission-source", (1,)],  # nu*SigmaF*phi
+    ]
+
+    if card["hybridMC"]:
+        if setting["mode_eigenvalue"]:
+            card["hybrid"]["score_list"]["fission-source"] = True
+
+    # Add score flags to structure
+    score_list = []
+    for i in range(len(scores_shapes)):
+        name = scores_shapes[i][0]
+        score_list += [(name, bool_)]
+    score_list = into_dtype(score_list)
+    hybrid_list += [("score_list", score_list)]
+
+    # Add scores to structure
+    scores_struct = []
+    for i in range(len(scores_shapes)):
+        name = scores_shapes[i][0]
+        shape = scores_shapes[i][1]
+        if not card["hybrid"]["score_list"][name]:
+            shape = (0,) * len(shape)
+        scores_struct += [(name, make_type_score(shape))]
+    # TODO: make outter effective fission size zero if not eigenmode
+    # (causes problems with numba)
+    scores_struct += [("effective-fission-outter", float64, (Ng, Nt, Nx, Ny, Nz))]
+    scores = into_dtype(scores_struct)
+    hybrid_list += [("score", scores)]
+
+    # Constants
+    hybrid_list += [
+        ("tol", float64),
+        ("w_min", float64),
+        ("residual", float64),
+        ("iteration_count", int64),
+        ("iterations_max", int64),
+        ("krylov_restart", int64),
+        ("sweep_count", int64),
+        ("fixed_source_solver", str_),
+        ("sample_method", str_),
+        ("mode", str_),
+    ]
+
+    struct += [("hybrid", into_dtype(hybrid_list))]
+
 
     # =========================================================================
     # IC generator
@@ -1471,6 +1569,13 @@ def make_type_global(input_deck):
             bank_census = particle_bank(0)
             bank_future = particle_bank(0)
 
+    # hybridMC bank adjustment
+    if input_deck.technique["hybridMC"]:
+        bank_source = particle_bank(N_work)
+        if input_deck.setting["mode_eigenvalue"]:
+            bank_census = particle_bank(0)
+            bank_future = particle_bank(0)
+    
     # Source and IC files bank adjustments
     if not input_deck.setting["mode_eigenvalue"]:
         if input_deck.setting["source_file"]:
@@ -1481,7 +1586,7 @@ def make_type_global(input_deck):
 
     if (
         input_deck.setting["source_file"] and not input_deck.setting["mode_eigenvalue"]
-    ) or input_deck.technique["iQMC"]:
+    ) or input_deck.technique["iQMC"] or input_deck.technique["hybridMC"]:
         bank_source = particle_bank(N_work)
 
     # GLobal type

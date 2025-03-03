@@ -54,6 +54,13 @@ def print_banner(mcdc):
             else:
                 solver = mcdc["technique"]["iqmc"]["fixed_source_solver"]
             banner += "         Solver | " + solver + "\n"
+        elif mcdc["technique"]["hybridMC"]:
+            banner += "      Algorithm | hybridMC\n"
+            if mcdc["setting"]["mode_eigenvalue"]:
+                solver = "power iteration"
+            else:
+                solver = mcdc["technique"]["iqmc"]["fixed_source_solver"]
+            banner += "         Solver | " + solver + "\n"
         else:
             banner += "      Algorithm | History-based\n"
         banner += "  MPI Processes | %i\n" % size
@@ -103,6 +110,19 @@ def print_progress_iqmc(mcdc):
             print("*******************************\n")
             sys.stdout.flush()
 
+def print_progress_hybrid(mcdc):
+    # TODO: function was not working with numba when structured like the
+    # other print_progress functions
+    if master:
+        if mcdc["setting"]["progress_bar"]:
+            sys.stdout.write("\r")
+            itt = mcdc["technique"]["hybrid"]["iteration_count"]
+            res = mcdc["technique"]["hybrid"]["residual"]
+            print("\n*******************************")
+            print("Iteration  %2d" % (itt))
+            print("Residual %10.3E" % (res))
+            print("*******************************\n")
+            sys.stdout.flush()
 
 def print_header_eigenvalue(mcdc):
     if master:
@@ -112,6 +132,9 @@ def print_header_eigenvalue(mcdc):
         elif mcdc["technique"]["iQMC"] and mcdc["technique"]["iqmc"]["mode"] == "fixed":
             print("\n #     k        Residual         ")
             print(" ==== ======= ===================")
+        elif mcdc["technique"]["hybridMC"] and mcdc["technique"]["hybrid"]["mode"] == "fixed":
+            print("\n #     k        Residual         ")
+            print(" ==== ======= ===================")    
         else:
             print("\n #     k        k (avg)            ")
             print(" ====  =======  ===================")
@@ -167,6 +190,38 @@ def print_iqmc_eigenvalue_exit_code(mcdc):
             sys.stdout.write("\r")
             maxit = mcdc["technique"]["iqmc"]["iterations_max"]
             itt = mcdc["technique"]["iqmc"]["iteration_count"]
+            if itt >= maxit:
+                print("\n")
+                print("================================")
+                print("\n")
+                print(
+                    " Convergence to tolerance not achieved: Maximum number of iterations."
+                )
+            else:
+                print("\n")
+                print("================================")
+                print(" Successful convergence.")
+                print("\n")
+            sys.stdout.flush()
+
+
+def print_hybrid_eigenvalue_progress(mcdc):
+    if master:
+        if mcdc["setting"]["progress_bar"]:
+            sys.stdout.write("\r")
+            k_eff = mcdc["k_eff"]
+            itt = mcdc["technique"]["hybrid"]["iteration_count"]
+            res = mcdc["technique"]["hybrid"]["residual"]
+            print("\n %2d   %2.5f  %10.3E" % (itt, k_eff, res))
+            sys.stdout.flush()
+
+
+def print_hybrid_eigenvalue_exit_code(mcdc):
+    if master:
+        if mcdc["setting"]["progress_bar"]:
+            sys.stdout.write("\r")
+            maxit = mcdc["technique"]["hybrid"]["iterations_max"]
+            itt = mcdc["technique"]["hybrid"]["iteration_count"]
             if itt >= maxit:
                 print("\n")
                 print("================================")

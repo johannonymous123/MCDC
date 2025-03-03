@@ -17,6 +17,7 @@ from mcdc.input_ import (
     time_census,
     weight_window,
     iQMC,
+    hybridMC,
     weight_roulette,
     IC_generator,
     uq,
