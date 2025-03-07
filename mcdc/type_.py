@@ -239,7 +239,10 @@ def make_type_particle(input_deck):
         G = input_deck.materials[0].G
         
     iqmc_struct = [("w", float64, (G,))]
-    struct += [("hybrid", iqmc_struct)] 
+    hybrid_struct = [("w", float64, (G,)),
+                     ("birth_time",float64)]
+
+    struct += [("hybrid", hybrid_struct)] 
     struct += [("iqmc", iqmc_struct)]
 
     # Save type
@@ -280,9 +283,15 @@ def make_type_particle_record(input_deck):
     if iQMC or hybridMC:
         G = input_deck.materials[0].G
     iqmc_struct = [("w", float64, (G,))]
-    struct += [("hybrid", iqmc_struct)]
+    hybrid_struct = [
+                    ("w", float64, (G,)),
+                    ("birth_time",float64)
+                     ]
+    
+    struct += [("hybrid", hybrid_struct)]
     struct += [("iqmc", iqmc_struct)]
-
+   
+    
     # Save type
     particle_record = into_dtype(struct)
 
@@ -1259,6 +1268,8 @@ def make_type_technique(input_deck):
     hybrid_list += [("source", float64, (Ng, Nt, Nx, Ny, Nz))]
     total_size = (Ng * Nt * Nx * Ny * Nz) * card["hybrid"]["krylov_vector_size"]
     hybrid_list += [(("total_source"), float64, (total_size,))]
+    hybrid_list += [("uncollided_flux", float64, (Ng, Nt, Nx, Ny, Nz))]
+    hybrid_list += [("time_step_idx", int64)]
 
     # Make scores
     scores_shapes = [

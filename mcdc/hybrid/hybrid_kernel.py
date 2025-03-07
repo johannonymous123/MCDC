@@ -31,8 +31,10 @@ def samples_init(mcdc):
     N_start = mcdc["mpi_work_start"]
     if mcdc["technique"]["hybrid"]["sample_method"] == "halton":
         mcdc["technique"]["hybrid"]["samples"] = halton(N, dim, skip=N_start)
+        mcdc["technique"]["hybrid"]["samples"][0,:].sort()
     if mcdc["technique"]["hybrid"]["sample_method"] == "random":
         mcdc["technique"]["hybrid"]["samples"] = random(N, dim)
+        mcdc["technique"]["hybrid"]["samples"][0,:].sort()
 
 
 @toggle("hybridMC")
@@ -278,6 +280,8 @@ def hybrid_prepare_particles(mcdc):
     yb = mesh["y"][-1]
     za = mesh["z"][0]
     zb = mesh["z"][-1]
+    ta = mesh["t"][0]
+    tb = mesh["t"][-1]
 
     for n in range(N_work):
         # Create new particle
@@ -285,15 +289,15 @@ def hybrid_prepare_particles(mcdc):
         P_new = P_new_arr[0]
         # assign initial group, time, and rng_seed (not used)
         P_new["g"] = 0
-        P_new["t"] = 0
+        P_new["t"] = hybrid_sample_position(xa, xb, samples[n, 0])
         P_new["rng_seed"] = 0
         # assign direction
-        P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 0])
-        P_new["y"] = hybrid_sample_position(ya, yb, samples[n, 4])
+        P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 1])
+        P_new["y"] = hybrid_sample_position(ya, yb, samples[n, 2])
         P_new["z"] = hybrid_sample_position(za, zb, samples[n, 3])
         # Sample isotropic direction
         P_new["ux"], P_new["uy"], P_new["uz"] = hybrid_sample_isotropic_direction(
-            samples[n, 1], samples[n, 5]
+            samples[n, 4], samples[n, 5]
         )
         x, y, z, t, outside = mesh_.structured.get_indices(P_new_arr, mesh)
         q = Q[:, t, x, y, z].copy()
@@ -303,9 +307,80 @@ def hybrid_prepare_particles(mcdc):
         # set particle weight
         P_new["hybrid"]["w"] = q * dV * N_total / N_particle
         P_new["w"] = P_new["hybrid"]["w"].sum()
+        P_new["hybrid"]["birth_time"] = P_new["t"]
         # add to source bank
         adapt.add_source(P_new_arr, mcdc)
 
+@toggle("hybridMC")
+def hybrid_reset_particles(mcdc):
+    """
+    Create N_particles assigning the position, direction, and group from the
+    QMC Low-Discrepency Sequence. Particles are added to the bank_source.
+
+    Particles are prepared as a batch in hybridMC so that we only have to call the
+    low-discprenecy sequence function once for fixed-seed mode or once per sweep
+    for batched mode.
+
+    """
+    hybrid = mcdc["technique"]["hybrid"]
+    # total number of particles
+    N_particle = mcdc["setting"]["N_particle"]
+    # number of particles this processor will handle
+    N_work = mcdc["mpi_work_size"]
+
+    # low discrepency sequence
+    samples = hybrid["samples"]
+    # source
+    Q = hybrid["source"]
+    mesh = hybrid["mesh"]
+    Nx = len(mesh["x"]) - 1
+    Ny = len(mesh["y"]) - 1
+    Nz = len(mesh["z"]) - 1
+    # total number of spatial cells
+    N_total = Nx * Ny * Nz
+    # outter mesh boundaries for sampling position
+    xa = mesh["x"][0]
+    xb = mesh["x"][-1]
+    ya = mesh["y"][0]
+    yb = mesh["y"][-1]
+    za = mesh["z"][0]
+    zb = mesh["z"][-1]
+    ta = mesh["t"][0]
+    tb = mesh["t"][-1]
+    t_prev = mesh["t"][hybrid["time_step_idx"]-1]
+    t_curr = mesh["t"][hybrid["time_step_idx"]]
+    ###############3
+    ###############3
+    resample_start = np.searchsorted(hybrid["samples"][:,0],t_prev , side='left')
+    resample_end = np.searchsorted(hybrid["samples"][:,0],t_curr , side='right')                               
+                                     #####
+    for n in range(resample_start,resample_end):
+        # Create new particle
+        P_new_arr = adapt.local_array(1, type_.particle_record)
+        P_new = P_new_arr[0]
+        # assign initial group, time, and rng_seed (not used)
+        P_new["g"] = 0
+        P_new["t"] = hybrid_sample_position(xa, xb, samples[n, 0])
+        P_new["rng_seed"] = 0
+        # assign direction
+        P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 1])
+        P_new["y"] = hybrid_sample_position(ya, yb, samples[n, 2])
+        P_new["z"] = hybrid_sample_position(za, zb, samples[n, 3])
+        # Sample isotropic direction
+        P_new["ux"], P_new["uy"], P_new["uz"] = hybrid_sample_isotropic_direction(
+            samples[n, 4], samples[n, 5]
+        )
+        x, y, z, t, outside = mesh_.structured.get_indices(P_new_arr, mesh)
+        q = Q[:, t, x, y, z].copy()
+        dV = hybrid_cell_volume(x, y, z, mesh)
+        # Source tilt
+        hybrid_tilt_source(t, x, y, z, P_new_arr, q, mcdc)
+        # set particle weight
+        P_new["hybrid"]["w"] = q * dV * N_total / N_particle
+        P_new["w"] = P_new["hybrid"]["w"].sum()
+        P_new["hybrid"]["birth_time"] = ta-1
+        # add to source bank
+        adapt.add_source(P_new_arr, mcdc)
 
 @toggle("hybridMC")
 def hybrid_cell_volume(x, y, z, mesh):
@@ -613,7 +688,7 @@ def hybrid_score_tallies(P_arr, distance, mcdc):
     w = P["hybrid"]["w"]
     SigmaT = material["total"]
     mat_id = P["material_ID"]
-
+    k_eff = mcdc["k_eff"]
     x, y, z, t, outside = mesh_.structured.get_indices(P_arr, mesh)
     if outside:
         return
@@ -631,44 +706,56 @@ def hybrid_score_tallies(P_arr, distance, mcdc):
     dV = dx * dy * dz * dt
 
     flux = hybrid_flux(SigmaT, w, distance, dV)
-    score_bin["flux"]["bin"][:, t, x, y, z] += flux
-
-    # Score effective source tallies
-    score_bin["effective-scattering"]["bin"][
-        :, t, x, y, z
-    ] += hybrid_effective_scattering(flux, mat_id, mcdc)
-    score_bin["effective-fission"]["bin"][:, t, x, y, z] += hybrid_effective_fission(
+    effective_scatter = hybrid_effective_scattering(flux, mat_id, mcdc)
+    effective_fission =  hybrid_effective_fission(
         flux, mat_id, mcdc
-    )
-
-    if score_list["fission-source"]:
-        score_bin["fission-source"]["bin"] += hybrid_fission_source(flux, material)
-
-    if score_list["fission-power"]:
-        score_bin["fission-power"]["bin"][:, t, x, y, z] += hybrid_fission_power(
-            flux, material
+    ) 
+    hybrid["uncollided_flux"]+= effective_scatter+effective_fission/k_eff
+    
+    
+    current_t_idx = mcdc["technique"]["hybrid"]["time_step_idx"]
+    
+    prev_t = mcdc["technique"]["hybrid"]["mesh"]["t"][current_t_idx-1]
+    
+    if P["hybrid"]["birth_time"] < prev_t:
+        score_bin["flux"]["bin"][:, t, x, y, z] += flux
+    
+        # Score effective source tallies
+        score_bin["effective-scattering"]["bin"][
+            :, t, x, y, z
+        ] += hybrid_effective_scattering(flux, mat_id, mcdc)
+        score_bin["effective-fission"]["bin"][:, t, x, y, z] += hybrid_effective_fission(
+            flux, mat_id, mcdc
         )
-
-    if score_list["source-x"]:
-        x_mid = mesh["x"][x] + (dx * 0.5)
-        tilt = hybrid_linear_tilt(P["ux"], P["x"], dx, x_mid, dy, dz, w, distance, SigmaT)
-        score_bin["source-x"]["bin"][:, t, x, y, z] += hybrid_effective_source(
-            tilt, mat_id, mcdc
-        )
-
-    if score_list["source-y"]:
-        y_mid = mesh["y"][y] + (dy * 0.5)
-        tilt = hybrid_linear_tilt(P["uy"], P["y"], dy, y_mid, dx, dz, w, distance, SigmaT)
-        score_bin["source-y"]["bin"][:, t, x, y, z] += hybrid_effective_source(
-            tilt, mat_id, mcdc
-        )
-
-    if score_list["source-z"]:
-        z_mid = mesh["z"][z] + (dz * 0.5)
-        tilt = hybrid_linear_tilt(P["uz"], P["z"], dz, z_mid, dx, dy, w, distance, SigmaT)
-        score_bin["source-z"]["bin"][:, t, x, y, z] += hybrid_effective_source(
-            tilt, mat_id, mcdc
-        )
+    
+        if score_list["fission-source"]:
+            score_bin["fission-source"]["bin"] += hybrid_fission_source(flux, material)
+    
+        if score_list["fission-power"]:
+            score_bin["fission-power"]["bin"][:, t, x, y, z] += hybrid_fission_power(
+                flux, material
+            )
+    
+        if score_list["source-x"]:
+            x_mid = mesh["x"][x] + (dx * 0.5)
+            tilt = hybrid_linear_tilt(P["ux"], P["x"], dx, x_mid, dy, dz, w, distance, SigmaT)
+            score_bin["source-x"]["bin"][:, t, x, y, z] += hybrid_effective_source(
+                tilt, mat_id, mcdc
+            )
+    
+        if score_list["source-y"]:
+            y_mid = mesh["y"][y] + (dy * 0.5)
+            tilt = hybrid_linear_tilt(P["uy"], P["y"], dy, y_mid, dx, dz, w, distance, SigmaT)
+            score_bin["source-y"]["bin"][:, t, x, y, z] += hybrid_effective_source(
+                tilt, mat_id, mcdc
+            )
+    
+        if score_list["source-z"]:
+            z_mid = mesh["z"][z] + (dz * 0.5)
+            tilt = hybrid_linear_tilt(P["uz"], P["z"], dz, z_mid, dx, dy, w, distance, SigmaT)
+            score_bin["source-z"]["bin"][:, t, x, y, z] += hybrid_effective_source(
+                tilt, mat_id, mcdc
+            )
 
 
 @toggle("hybridMC")

@@ -150,6 +150,8 @@ class InputDeck:
                 "iterations_max": 5,
                 "fixed_source": np.ones([1, 1, 1, 1, 1]),
                 "material_idx": np.ones([1, 1, 1, 1]),
+                "uncollided_flux":np.ones([1, 1, 1, 1, 1]),
+                "time_step_idx":0,
                 "source": np.ones([1, 1, 1, 1, 1]),
                 "score": {
                     "flux": np.ones([1, 1, 1, 1]),

@@ -1640,6 +1640,7 @@ def hybridMC(
         card["hybrid"]["mesh"]["g"] = g
     if t is not None:
         card["hybrid"]["mesh"]["t"] = t
+        card["hybrid"]["time_step_idx"] = 0
     if x is not None:
         card["hybrid"]["mesh"]["x"] = x
     if y is not None:
@@ -1961,8 +1962,11 @@ def make_particle_bank(size):
         ("rng_seed", np.uint64),
     ]
     iqmc_struct = [("w", np.float64, (1,))]
+    hybrid_struct = [("w", np.float64, (1,)),
+                     ("birth_time", np.float64)]
+    
     struct += [("iqmc", iqmc_struct)]    
-    struct += [("hybrid", iqmc_struct)]
+    struct += [("hybrid", hybrid_struct)]
     bank = np.zeros(size, dtype=np.dtype(struct))
 
     # Set default values

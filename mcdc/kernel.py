@@ -1027,6 +1027,7 @@ def get_particle(P_arr, bank, mcdc):
         P["iqmc"]["w"] = P_rec["iqmc"]["w"]
     if mcdc["technique"]["hybridMC"]:
         P["hybrid"]["w"] = P_rec["hybrid"]["w"]    
+        P["hybrid"]["birth_time"] = P_rec["hybrid"]["birth_time"]  
 
     P["alive"] = True
 
@@ -1759,6 +1760,7 @@ def copy_recordlike(P_new_arr, P_rec_arr):
     P_new["rng_seed"] = P_rec["rng_seed"]
     P_new["iqmc"]["w"] = P_rec["iqmc"]["w"]
     P_new["hybrid"]["w"] = P_rec["hybrid"]["w"]
+    P_new["hybrid"]["birth_time"] = P_rec["hybrid"]["birth_time"]
 
 
 @njit
@@ -1784,6 +1786,7 @@ def copy_particle(P_new_arr, P_arr):
     P_new["rng_seed"] = P["rng_seed"]
     P_new["iqmc"]["w"] = P["iqmc"]["w"]
     P_new["hybrid"]["w"] = P["hybrid"]["w"]
+    P_new["hybrid"]["birth_time"] = P["hybrid"]["birth_time"]
 
 
 @njit

@@ -118,15 +118,36 @@ def source_iteration(mcdc):
     simulation_end = False
     hybrid = mcdc["technique"]["hybrid"]
     total_source_old = hybrid["total_source"].copy()
-
+    time_steps = hybrid["mesh"]["t"]
+    Nt = len(time_steps)
+    # reset particle bank size
+    kernel.set_bank_size(mcdc["bank_source"], 0)
+    # initialize particles with LDS
+    hybrid_kernel.hybrid_prepare_particles(mcdc)
+    
+  #  for times in time_steps:
+   #     hybrid_particle_sweep(0, times)    #ToDo: Iterate
+    #    discrete_ordinates_sweep()
+     #   hybrid_particle_sweep(tn_start,times)
+      #  tn_start = tn_end
+        
+        
+        
     while not simulation_end:
-        hybrid_sweep(mcdc)
+        mcdc["technique"]["hybrid"]["time_step_idx"]+=1
+        hybrid_time_step(mcdc)
+
+        
+        #hybrid_sweep(mcdc)
+        
         hybrid["iteration_count"] += 1
         # calculate norm of sources
         hybrid["residual"] = hybrid_kernel.hybrid_res(hybrid["total_source"], total_source_old)
         # hybridMC convergence criteria
+        
+        
         if (hybrid["iteration_count"] == hybrid["iterations_max"]) or (
-            hybrid["residual"] <= hybrid["tol"]
+            hybrid["residual"] <= hybrid["tol"] or hybrid["time_steps_idx"]== Nt-1
         ):
             simulation_end = True
 
@@ -137,7 +158,9 @@ def source_iteration(mcdc):
 
         # set  source_old = current source
         total_source_old = hybrid["total_source"].copy()
-
+        
+     # sum resultant flux on all processors
+    hybrid_kernel.hybrid_reduce_tallies(hybrid)
 
 @njit
 def power_iteration(mcdc):
@@ -360,9 +383,14 @@ def gmres(mcdc):
 def hybrid_loop_particle(P_arr, prog):
     mcdc = adapt.mcdc_global(prog)
     P = P_arr[0]
-    while P["alive"]:
+    current_t_idx = mcdc["technique"]["hybrid"]["time_step_idx"]
+    current_t = mcdc["technique"]["hybrid"]["mesh"]["t"][current_t_idx]
+    prev_t = mcdc["technique"]["hybrid"]["mesh"]["t"][current_t_idx-1]
+    while P["alive"] and P["t"]<current_t:  #Move Particles to end of current step
         hybrid_step_particle(P_arr, prog)
-
+    if P["hybrid"]["birth_time"] < prev_t and P["alive"]:    #Particles that were around current step won't be relabeled and move on next step 
+        adapt.add_source(P_arr, mcdc)
+        
 
 @njit
 def hybrid_step_particle(P_arr, prog):
@@ -447,7 +475,37 @@ def hybrid_sweep(mcdc):
     hybrid_kernel.hybrid_consolidate_sources(mcdc)
 
 
-# =============================================================================
+@njit
+def hybrid_time_step(mcdc):
+    hybrid_particle_sweep(mcdc)
+    hybrid_SN_sweep(mcdc)
+    hybrid_relabel(mcdc)
+    
+
+@njit
+def hybrid_particle_sweep(mcdc):
+    hybrid = mcdc["technique"]["hybrid"]
+    # sweep particles
+    hybrid_loop_source(mcdc)
+    kernel.allreduce_array(hybrid["uncollided_flux"])
+
+    
+          
+    
+@njit    
+def hybrid_SN_sweep(mcdc):
+    1+1
+
+@njit    
+def hybrid_relabel(mcdc):
+    hybrid = mcdc["technique"]["hybrid"]
+    # Particles born this time_step are reborn, scine source changed
+    hybrid_kernel.hybrid_reset_particles(mcdc)
+    
+    # sweep particles
+    hybrid_loop_source(mcdc)
+    hybrid["uncollided_flux"].fill(0)
+# ===========================================================================
 # GMRES Linear operator
 # =============================================================================
 
