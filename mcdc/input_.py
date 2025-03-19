@@ -1561,6 +1561,10 @@ def hybridMC(
     source_z0=None,
     krylov_restart=None,
     fixed_source=None,
+    x_degree = -1,
+    y_degree = -1,
+    z_degree = -1,
+    n_ordinates = 4,
     maxit=25,
     tol=1e-6,
     fixed_source_solver="source iteration",
@@ -1634,8 +1638,9 @@ def hybridMC(
     card["hybrid"]["iterations_max"] = maxit
     card["hybrid"]["sample_method"] = sample_method
     card["hybrid"]["mode"] = mode
-
+    card["hybrid"]["SN"]["n_ordinates"] = n_ordinates 
     # Set mesh
+    dim = 0
     if g is not None:
         card["hybrid"]["mesh"]["g"] = g
     if t is not None:
@@ -1643,11 +1648,28 @@ def hybridMC(
         card["hybrid"]["time_step_idx"] = 0
     if x is not None:
         card["hybrid"]["mesh"]["x"] = x
+        dim+=1
     if y is not None:
         card["hybrid"]["mesh"]["y"] = y
+        dim+=1
     if z is not None:
         card["hybrid"]["mesh"]["z"] = z
-
+        dim+=1
+    if x_degree !=- 1:
+        card["hybrid"]["SN"]["x_degree"] = x_degree
+    if y_degree !=- 1:
+        card["hybrid"]["SN"]["y_degree"] = y_degree
+    if z_degree != -1:
+        card["hybrid"]["SN"]["z_degree"] = z_degree    
+    
+        
+    if dim ==1:
+        card["hybrid"]["SN"]["n_directions"] = n_ordinates 
+    if dim == 2:
+        card["hybrid"]["SN"]["n_directions"] = n_ordinates**2
+    if dim == 3:
+        card["hybrid"]["SN"]["n_directions"] = 2*n_ordinates**2
+        
     ax_expand = []
     if g is None:
         ax_expand.append(0)

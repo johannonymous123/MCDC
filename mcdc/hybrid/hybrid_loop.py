@@ -89,7 +89,7 @@ def hybrid_simulation(mcdc_arr):
     hybrid = mcdc["technique"]["hybrid"]
     hybrid_kernel.hybrid_preprocess(mcdc)
     hybrid_kernel.samples_init(mcdc)
-
+    hybrid_kernel.sn_init(mcdc)
     if hybrid["mode"] == "batched":
         hybrid["iterations_max"] = (
             mcdc["setting"]["N_active"] + mcdc["setting"]["N_inactive"] - 1
@@ -477,8 +477,12 @@ def hybrid_sweep(mcdc):
 
 @njit
 def hybrid_time_step(mcdc):
+    n_particles = mcdc["setting"]["N_particle"]
+    n_directions = mcdc["technique"]["hybrid"]["SN"]["ordinates"].shape[1]
     hybrid_particle_sweep(mcdc)
+    kernel.distribute_work(n_directions,mcdc)
     hybrid_SN_sweep(mcdc)
+    kernel.distribute_work(n_particles,mcdc)
     hybrid_relabel(mcdc)
     
 
@@ -494,8 +498,129 @@ def hybrid_particle_sweep(mcdc):
     
 @njit    
 def hybrid_SN_sweep(mcdc):
-    1+1
+    
+    iterate = True
+    while iterate:
+        single_SN_sweep(mcdc)
+        iterate = False
+    
 
+@njit
+def single_SN_sweep(mcdc):
+    sn = mcdc["technique"]["hybrid"]["SN"]  
+    mesh = mcdc["technique"]["hybrid"]["mesh"] 
+    x_deg = sn["x_degree"]
+    y_deg = sn["y_degree"]
+    z_deg = sn["z_degree"]
+    ordinates = sn["ordinates"]
+    n_directions = ordinates.shape[1]
+    n_ord_tot = ordinates.shape[0]
+    omega =np.zeros([4])
+    Nx = mesh["Nx"]
+    Ny = mesh["Ny"]
+    Nz = mesh["Nz"]
+    
+    for i in range(n_ord_tot):
+        index = 0 
+        omega[3] = ordinates[i,-1]
+        if x_deg != -1:
+            omega[0] = ordinates[i,index]
+            index += 1
+        if y_deg != -1:
+            omega[1] = ordinates[i,index]
+            index += 1
+        if z_deg != -1:
+            omega[2] = ordinates[i,index]
+    x_range = range(Nx) if omega[0] >= 0 else range(Nx-1, -1, -1)
+    y_range = range(Ny) if omega[1] >= 0 else range(Ny-1, -1, -1)
+    z_range = range(Nz) if omega[2] >= 0 else range(Nz-1, -1, -1)
+
+    # Traverse the mesh in the determined order
+    for x in x_range:
+        for y in y_range:
+            for z in z_range:
+                
+                solve_SN(omega,x,y,z,mcdc)
+                
+@njit
+def solve_SN(Omega,x,y,z,mcdc):
+
+    
+    ########################
+    hybrid = mcdc["technique"]["hybrid"]
+    
+    
+    t_idx = hybrid["time_step_idx"] 
+    t = hybrid["mesh"]["t"]
+    dt_inv = 1/(t[t_idx]-t[t_idx-1])
+    
+    mat_idx = mcdc["technique"]["hybrid"]["material_idx"][t_idx-1, x, y, z] 
+    sigmaT =  mcdc["materials"][mat_idx]["total"]+dt_inv
+    n_dim = np.count_nonzero(Omega[0:-1])
+    idz = np.nonzero(Omega[0:-1])[0]
+    tensors = ["tensor_x", "tensor_y", "tensor_z"] 
+    coefs = ["ceof_x","coef_y", "coef_z"]
+    
+    dx_in = dy_in = dz_in = 1
+    if Omega[0] !=0:
+        dx_in = 1/(hybrid["mesh"]["x"][x+1]-hybrid["mesh"]["x"][x])
+    if Omega[1] !=0:
+        dy_in = 1/(hybrid["mesh"]["y"][y+1]-hybrid["mesh"]["y"][y])    
+    if Omega[2] !=0:
+        dz_in = 1/(hybrid["mesh"]["z"][z+1]-hybrid["mesh"]["z"][z])
+        
+        
+    LHS_inv = []
+    RHS = []
+    for i in range(n_dim):
+        idx = idz[i]
+        idx1 = idz[0]
+        updown = int(Omega[idx]<0)
+        tensor = hybrid["SN"][tensors[idx]][:,:,updown,:]
+        coef = hybrid["SN"][coefs[idx]]
+        #mean_coef = 0 #############
+        #ceof = coef[]
+        
+        #R = 
+        LHS = (dy_in*dz_in)/Omega[idx]*tensor[:,:,0]
+        if sigmaT != 0 and n_dim ==1:
+            LHS += (
+                (dy_in*dz_in)**3/Omega[idx1]**3*tensor[:,:,1] 
+                        +dx_in*dy_in**2*dz_in**3/sigmaT/(Omega[idx1]**2)*tensor[:,:,2]
+                        )
+        if n_dim > 1:
+            idx2 = idz[1]
+            LHS += ((dy_in*dz_in)**3/Omega[idx1]**3/Omega[idx1]**3*tensor[:,:,1]  
+                    +dx_in*dy_in**2*dz_in**3/Omega[idx1]**2/Omega[idx2]*tensor[:,:,2]
+                    )
+            if sigmaT != 0 and n_dim ==2:
+                LHS += ( 
+                    dx_in**3*dy_in**2*dz_in**5/Omega[idx1]**2/Omega[idx2]**3*tensor[:,:,3]
+                    +dx_in**3*dy_in**3*dz_in**4/Omega[idx1]**2/Omega[idx2]**2/sigmaT * tensor[:,:,4]                                              
+                    )
+        if n_dim == 3:
+            idx3 = idz[2]
+            LHS += (
+                dx_in**3*dy_in**2*dz_in**5/Omega[idx1]**2/Omega[idx2]**3*tensor3[:,:,3]
+            +dx_in**3*dy_in**3*dz_in**4/Omega[idx1]**2/Omega[idx2]**2/Omega[idx3] * tensor3[:,:,4] 
+            )
+        if sigmaT != 0 and n_dim ==3:
+            LHS +=(
+                dx_in**5*dy_in**3*dz_in**4/Omega[idx1]**2/Omega[idx2]**2/Omega[idx3]**3*tensor3[:,:,5]
+                +(dx_in*dy_in*dz_in)**5/Omega[idx1]**2/Omega[idx2]**2/Omega[idx3]**2/sigmaT*tensor3[:,:,6]
+                )
+            
+        LHS_inv.append(LHS)
+        
+           
+            
+            
+    
+    
+    
+    
+   
+    
 @njit    
 def hybrid_relabel(mcdc):
     hybrid = mcdc["technique"]["hybrid"]

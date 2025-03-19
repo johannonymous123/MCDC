@@ -1379,6 +1379,7 @@ def prepare():
             "w_min",
             "score_list",
             "score",
+            "SN",
         ]:
             copy_field(mcdc["technique"]["hybrid"], input_deck.technique["hybrid"], name)
 
@@ -1404,8 +1405,11 @@ def prepare():
         for name, value in input_deck.technique["hybrid"]["score"].items():
             mcdc["technique"]["hybrid"]["score"][name]["bin"] = value
         # minimum particle weight
-        hybrid["w_min"] = 1e-13        
-
+        hybrid["w_min"] = 1e-13  
+        
+        for name, value in input_deck.technique["hybrid"]["SN"].items():
+            if name not in ["ordinates","tensor_x","tensor_y","tensor_z"]:
+                mcdc["technique"]["hybrid"]["SN"][name] = value
     # =========================================================================
     # Variance Deconvolution - UQ
     # =========================================================================

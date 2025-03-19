@@ -1253,6 +1253,7 @@ def make_type_technique(input_deck):
     if card["hybridMC"]:
         mesh, Nx, Ny, Nz, Nt, Nmu, N_azi = make_type_mesh_(card["hybrid"]["mesh"])
         Ng = G
+    
         N_dim = 6  # group, x, y, z, mu, phi
     else:
         Nx = Ny = Nz = Nt = Nmu = N_azi = N_particle_hybrid = Ng = N_dim = 0
@@ -1270,6 +1271,8 @@ def make_type_technique(input_deck):
     hybrid_list += [(("total_source"), float64, (total_size,))]
     hybrid_list += [("uncollided_flux", float64, (Ng, Nt, Nx, Ny, Nz))]
     hybrid_list += [("time_step_idx", int64)]
+
+    
 
     # Make scores
     scores_shapes = [
@@ -1322,7 +1325,36 @@ def make_type_technique(input_deck):
         ("sample_method", str_),
         ("mode", str_),
     ]
+    n_directions = card["hybrid"]["SN"]["n_directions"]     
+    n_ordinates  = n_directions = card["hybrid"]["SN"]["n_directions"]     
+    if n_directions == n_ordinates:
+        directions = 1
+    if n_directions == n_ordinates**2:
+        directions = 2
+    if n_directions == 2*n_ordinates**2:
+        directions = 3
+    x_deg = card["hybrid"]["SN"]["x_degree"]
+    y_deg = card["hybrid"]["SN"]["y_degree"]
+    z_deg = card["hybrid"]["SN"]["z_degree"]
+    n_ten = 3+2*directions
+    
+    if card["hybridMC"]:
+        sn_list = [("n_ordinates", int64)]
+        sn_list += [("x_degree", int64)]
+        sn_list += [("y_degree", int64)]
+        sn_list += [("z_degree", int64)]
+        sn_list += [("coef_x", float64, (x_deg+1, Ng,Nx,Ny,Nz))]
+        sn_list += [("coef_y", float64, (y_deg+1, Ng,Nx,Ny,Nz))]
+        sn_list += [("coef_z", float64, (z_deg+1, Ng,Nx,Ny,Nz))]
+        sn_list += [("n_directions", int64)]
+        sn_list += [("ordinates", float64, (get_work_size(n_directions),directions+1))]
+        sn_list += [("tensor_x", float64, (x_deg+1,x_deg+1,2,n_ten))]
+        sn_list += [("tensor_y", float64, (y_deg+1,y_deg+1,2,n_ten))]
+        sn_list += [("tensor_z", float64, (z_deg+1,z_deg+1,2,n_ten))]
 
+
+    sn = into_dtype(sn_list)
+    hybrid_list+=[("SN",sn)]
     struct += [("hybrid", into_dtype(hybrid_list))]
 
 

@@ -326,7 +326,8 @@ def hybrid_reset_particles(mcdc):
     # total number of particles
     N_particle = mcdc["setting"]["N_particle"]
     # number of particles this processor will handle
-    N_work = mcdc["mpi_work_size"]
+    
+    #N_work = mcdc["mpi_work_size"]
 
     # low discrepency sequence
     samples = hybrid["samples"]
@@ -382,6 +383,179 @@ def hybrid_reset_particles(mcdc):
         # add to source bank
         adapt.add_source(P_new_arr, mcdc)
 
+
+@toggle("hybridMC")
+def sn_init(mcdc):
+    ordinates_init(mcdc)
+    tensor_init(mcdc)
+
+
+@toggle("hybridMC")    
+def ordinates_init(mcdc):
+    sn = mcdc["technique"]["hybrid"]["SN"]
+    work_start = mcdc["mpi_work_start"]
+    work_size = mcdc["mpi_work_size"]
+    shape = sn["ordinates"].shape
+    nodes, weights = np.polynomial.legendre.leggauss(sn["n_ordinates"])
+    if shape[1]==2:
+        sn["ordinates"][:,0] = nodes[work_start:work_start+work_size]
+        sn["ordinates"][:,1] = weights[work_start:work_start+work_size]
+    else:
+        n_polar = 2*sn["n_ordinates"]
+        angles = np.linspace(0, 2*np.pi, n_polar, endpoint=False) +np.pi/n_polar 
+        unit_circle_points = np.column_stack((np.cos(angles), np.sin(angles)))
+        if shape[1]==3:
+            nodes = nodes[len(nodes)//2:]
+            weights = nodes[len(weights)//2:]    
+            ordinates= np.array([
+                (np.sqrt(1-node**2)*x, np.sqrt(1-node**2)*y, node, 1/n_polar*weight) 
+                for (x, y) in unit_circle_points for node, weight in zip(nodes, weights)
+                ])
+        if shape[1]==4:    
+            ordinates = np.array([
+                (np.sqrt(1-node**2)*x, np.sqrt(1-node**2)*y, node,1/n_polar * weight) 
+                for (x, y) in unit_circle_points for node, weight in zip(nodes, weights)
+                ])
+        sn["ordinates"] = ordinates[work_start:work_start+work_size,:]
+
+@toggle("hybridMC")
+def tensor_init(mcdc):
+    sn = mcdc["technique"]["hybrid"]["SN"]    
+    x_deg = sn["x_degree"]
+    y_deg = sn["y_degree"]
+    z_deg = sn["z_degree"]
+    if x_deg > -1:
+        build_tensor(mcdc, 1,0)
+
+    if y_deg > -1:
+        build_tensor(mcdc, 2 if x_deg > -1 else 1,1)
+
+    if z_deg > -1:
+        degree = 3 if x_deg > -1 and y_deg > -1 else 2 if x_deg > -1 or y_deg > -1 else 1
+        build_tensor_2(mcdc, degree,2)
+
+    
+def build_tensor(mcdc, flag, axis):
+    """eq for ceof is given as 
+       (Omega*B+sigma_t N)coef = P neighbor_coef + sigma_s N old_coef in every dimmension
+       This sets up tensors to invert this equation in a simple functional form
+    """
+    sn = mcdc["technique"]["hybrid"]["SN"]
+    tensor = ["tensor_x","tensor_y","tensor_z"][axis]
+    deg = ["x_degree","y_degree","z_degree"][axis]
+    deg = sn[deg]
+    directions=sn["ordinates"].shape[1]-1
+    if deg == 0:
+        N_inv = Bp = Bn = np.array([[1]])
+    
+    # Initialize an (n+1) x (n+1) matrix with zeros
+    Bp = np.zeros((deg+1, deg+1))
+    
+    # Set the required entries
+    Bp[0, 0] = 0.5  # Top-left entry
+    Bp[deg, deg] = 0.5  # Bottom-right entry
+    
+    # Set the first lower and upper diagonals
+    np.fill_diagonal(Bp[1:], 0.5)  # Lower diagonal
+    np.fill_diagonal(Bp[:, 1:], -0.5)  # Upper diagonal
+    
+    Bn = Bp
+    Bn[0,0]-=1
+    Bn[-1,-1]-=1
+    Bn[-1,0]-=2
+    N_inv = np.diag([2*i + 1 for i in range(deg+1)])
+    N = np.diag([1/(2*i + 1) for i in range(deg+1)])
+    Pp = np.fromfunction(lambda i, j: (-1)**i, (deg+1, deg+1), dtype=int)
+    Pn = Pp.T
+    sn[tensor][:,:,0,-1] = N
+    sn[tensor][:,:,1,-1] = N
+    sn[tensor][:,:,0,-2] = Pp
+    sn[tensor][:,:,1,-2] = Pn
+    if flag == 1:
+        sn[tensor][:,:,0,0] = Bp
+        sn[tensor][:,:,1,0] = Bn
+        
+        sn[tensor][:,:,0,1] = - Bp @ Bp @ Bp
+        sn[tensor][:,:,1,1] = - Bn @ Bn @ Bn
+        
+        sn[tensor][:,:,0,2] = - Bp @ N_inv @ Bp 
+        sn[tensor][:,:,1,2] = - Bn @ N_inv @ Bn
+        
+        if directions > 1:        
+            N_cub = N_inv @ N_inv @ N_inv
+            sn[tensor][:,:,0,3] = Bp @ N_cub @ Bp
+            sn[tensor][:,:,1,3] = Bn @ N_cub @ Bn
+            
+            sn[tensor][:,:,0,4] = sn[tensor][:,:,0,3] 
+            sn[tensor][:,:,1,4] = sn[tensor][:,:,1,3] 
+        if directions > 2:
+            N_quint = N_inv @ N_inv @ N_cub
+            sn[tensor][:,:,0,5] = -Bp @ N_quint @ Bp
+            sn[tensor][:,:,1,5] = -Bp @ N_quint @ Bp
+            
+            sn[tensor][:,:,0,6] =  sn[tensor][:,:,0,5]
+            sn[tensor][:,:,1,6] =  sn[tensor][:,:,1,5]
+    
+    if flag == 2:
+        sn[tensor][:,:,0,0] = N_inv
+        sn[tensor][:,:,1,0] = N_inv
+        
+        N_cub = N_inv @ N_inv @ N_inv
+        
+        sn[tensor][:,:,0,1] = - N_cub
+        sn[tensor][:,:,1,1] = - N_cub
+        
+        sn[tensor][:,:,0,2] = - N_inv @ Bp @ N_inv 
+        sn[tensor][:,:,1,2] = - N_inv @ Bn @ N_inv
+        
+        if directions > 1:        
+            Bp_cub = Bp @ Bp @ Bp
+            Bn_cub = Bn @ Bn @ Bn
+            sn[tensor][:,:,0,3] = N_inv @ Bp_cub @ N_inv
+            sn[tensor][:,:,1,3] = N_inv @ Bp_cub @ N_inv
+            
+            sn[tensor][:,:,0,4] = N_inv @ Bp @ N_inv @ Bp @ N_inv 
+            sn[tensor][:,:,1,4] = N_inv @ Bn @ N_inv @ Bn @ N_inv 
+        if directions > 2:
+            N_quint = N_inv @ N_inv @ N_cub
+            sn[tensor][:,:,0,5] = - sn[tensor][:,:,0,4]
+            sn[tensor][:,:,1,5] = - sn[tensor][:,:,1,4]
+            
+            sn[tensor][:,:,0,6] = - N_inv @ Bp @ N_cub @ Bp @ N_inv
+            sn[tensor][:,:,1,6] = - N_inv @ Bn @ N_cub @ Bn @ N_inv  
+            
+    if flag == 3:
+        sn[tensor][:,:,0,0] = N_inv
+        sn[tensor][:,:,1,0] = N_inv
+        
+        N_cub = N_inv @ N_inv @ N_inv
+        
+        sn[tensor][:,:,0,1] = - N_cub
+        sn[tensor][:,:,1,1] = - N_cub
+        
+        sn[tensor][:,:,0,2] = - N_cub 
+        sn[tensor][:,:,1,2] = - N_cub
+        
+        if directions > 1:        
+            
+            sn[tensor][:,:,0,3] = N_inv @ N_cub @ N_inv
+            sn[tensor][:,:,1,3] = N_inv @ N_cub @ N_inv
+            
+            N_sq = N_inv @ N_inv
+            sn[tensor][:,:,0,4] = N_sq @ Bp @ N_sq  
+            sn[tensor][:,:,1,4] = N_sq @ Bp @ N_sq  
+            
+        if directions > 2:
+            
+            Bp_cub = Bp @ Bp @ Bp
+            Bn_cub = Bn @ Bn @ Bn
+
+            sn[tensor][:,:,0,5] = - N_sq @ Bp_cub @ N_sq
+            sn[tensor][:,:,1,5] = - N_sq @ Bn_cub @ N_sq
+            
+            sn[tensor][:,:,0,6] = - N_sq @ Bp @ N_inv @ Bp @ N_sq
+            sn[tensor][:,:,1,6] = - N_sq @ Bn @ N_inv @ Bn @ N_sq   
+    
 @toggle("hybridMC")
 def hybrid_cell_volume(x, y, z, mesh):
     """
