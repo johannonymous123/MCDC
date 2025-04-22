@@ -1269,7 +1269,9 @@ def make_type_technique(input_deck):
     hybrid_list += [("source", float64, (Ng, Nt, Nx, Ny, Nz))]
     total_size = (Ng * Nt * Nx * Ny * Nz) * card["hybrid"]["krylov_vector_size"]
     hybrid_list += [(("total_source"), float64, (total_size,))]
-    hybrid_list += [("uncollided_flux", float64, (Ng, Nt, Nx, Ny, Nz))]
+    hybrid_list += [("uncollided_flux", float64, (Ng,  Nx, Ny, Nz))]
+    hybrid_list += [("collided_flux", float64, (Ng,  Nx, Ny, Nz))]
+
     hybrid_list += [("time_step_idx", int64)]
 
     
@@ -1338,20 +1340,21 @@ def make_type_technique(input_deck):
     z_deg = card["hybrid"]["SN"]["z_degree"]
     n_ten = 3+2*directions
     
+    sn_list=[]
     if card["hybridMC"]:
         sn_list = [("n_ordinates", int64)]
         sn_list += [("x_degree", int64)]
         sn_list += [("y_degree", int64)]
         sn_list += [("z_degree", int64)]
-        sn_list += [("coef_x", float64, (x_deg+1, Ng,Nx,Ny,Nz))]
-        sn_list += [("coef_y", float64, (y_deg+1, Ng,Nx,Ny,Nz))]
-        sn_list += [("coef_z", float64, (z_deg+1, Ng,Nx,Ny,Nz))]
+        sn_list += [("coef", float64, (Ng,x_deg+1,y_deg+1,z_deg+1, Nx,Ny,Nz,n_directions))]        
         sn_list += [("n_directions", int64)]
         sn_list += [("ordinates", float64, (get_work_size(n_directions),directions+1))]
         sn_list += [("tensor_x", float64, (x_deg+1,x_deg+1,2,n_ten))]
         sn_list += [("tensor_y", float64, (y_deg+1,y_deg+1,2,n_ten))]
         sn_list += [("tensor_z", float64, (z_deg+1,z_deg+1,2,n_ten))]
-
+        sn_list +=[("uncollided_flux", float64,(Ng,Nx,Ny,Nz))]
+        sn_list +=[("collided_flux", float64,(Ng,x_deg+1,y_deg+1,z_deg+1,Nx,Ny,Nz))]
+       
 
     sn = into_dtype(sn_list)
     hybrid_list+=[("SN",sn)]

@@ -350,6 +350,9 @@ def hybrid_reset_particles(mcdc):
     tb = mesh["t"][-1]
     t_prev = mesh["t"][hybrid["time_step_idx"]-1]
     t_curr = mesh["t"][hybrid["time_step_idx"]]
+    t_idx = hybrid["time_step_idx"] 
+    
+    
     ###############3
     ###############3
     resample_start = np.searchsorted(hybrid["samples"][:,0],t_prev , side='left')
@@ -372,7 +375,9 @@ def hybrid_reset_particles(mcdc):
             samples[n, 4], samples[n, 5]
         )
         x, y, z, t, outside = mesh_.structured.get_indices(P_new_arr, mesh)
-        q = Q[:, t, x, y, z].copy()
+        eff_collided_flux = hybrid["SN"]["collided_flux"][:,0,0,0,x,y,z]
+        eff_uncollided_flux = hybrid["SN"]["uncollided_flux"][:,x,y,z]
+        q = Q[:, t, x, y, z].copy()+eff_collided_flux+eff_uncollided_flux
         dV = hybrid_cell_volume(x, y, z, mesh)
         # Source tilt
         hybrid_tilt_source(t, x, y, z, P_new_arr, q, mcdc)
@@ -426,14 +431,18 @@ def tensor_init(mcdc):
     z_deg = sn["z_degree"]
     if x_deg > -1:
         build_tensor(mcdc, 1,0)
+    else:
+        sn["tensor_x"]+=1
 
     if y_deg > -1:
         build_tensor(mcdc, 2 if x_deg > -1 else 1,1)
-
+    else:
+        sn["tensor_y"]+=1
     if z_deg > -1:
         degree = 3 if x_deg > -1 and y_deg > -1 else 2 if x_deg > -1 or y_deg > -1 else 1
         build_tensor_2(mcdc, degree,2)
-
+    else:
+        sn["tensor_z"]+=1
     
 def build_tensor(mcdc, flag, axis):
     """eq for ceof is given as 
@@ -463,6 +472,8 @@ def build_tensor(mcdc, flag, axis):
     Bn[0,0]-=1
     Bn[-1,-1]-=1
     Bn[-1,0]-=2
+    Bn = Bn
+    Bp = Bp
     N_inv = np.diag([2*i + 1 for i in range(deg+1)])
     N = np.diag([1/(2*i + 1) for i in range(deg+1)])
     Pp = np.fromfunction(lambda i, j: (-1)**i, (deg+1, deg+1), dtype=int)
@@ -884,7 +895,7 @@ def hybrid_score_tallies(P_arr, distance, mcdc):
     effective_fission =  hybrid_effective_fission(
         flux, mat_id, mcdc
     ) 
-    hybrid["uncollided_flux"]+= effective_scatter+effective_fission/k_eff
+    hybrid["SN"]["uncollided_flux"][:,x,y,z]+= effective_scatter+effective_fission/k_eff
     
     
     current_t_idx = mcdc["technique"]["hybrid"]["time_step_idx"]

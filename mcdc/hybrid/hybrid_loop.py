@@ -478,7 +478,7 @@ def hybrid_sweep(mcdc):
 @njit
 def hybrid_time_step(mcdc):
     n_particles = mcdc["setting"]["N_particle"]
-    n_directions = mcdc["technique"]["hybrid"]["SN"]["ordinates"].shape[1]
+    n_directions = mcdc["technique"]["hybrid"]["SN"]["ordinates"].shape[0]
     hybrid_particle_sweep(mcdc)
     kernel.distribute_work(n_directions,mcdc)
     hybrid_SN_sweep(mcdc)
@@ -498,11 +498,16 @@ def hybrid_particle_sweep(mcdc):
     
 @njit    
 def hybrid_SN_sweep(mcdc):
-    
+    hybrid = mcdc["technique"]["hybrid"]    
     iterate = True
+    iterations = 0
     while iterate:
-        single_SN_sweep(mcdc)
-        iterate = False
+        iterations += 1
+        err = single_SN_sweep(mcdc)
+        kernel.allreduce_array(hybrid["SN"]["collided_flux"])
+        
+        
+        iterate = err > hybrid["tol"] or iterations > hybrid["iterations_max"]
     
 
 @njit
@@ -519,103 +524,187 @@ def single_SN_sweep(mcdc):
     Nx = mesh["Nx"]
     Ny = mesh["Ny"]
     Nz = mesh["Nz"]
-    
-    for i in range(n_ord_tot):
+    max_err = INF
+    for i_ordinates in range(n_ord_tot):
         index = 0 
-        omega[3] = ordinates[i,-1]
+        omega[3] = ordinates[i_ordinates,-1]
         if x_deg != -1:
-            omega[0] = ordinates[i,index]
+            omega[0] = ordinates[i_ordinates,index]
             index += 1
         if y_deg != -1:
-            omega[1] = ordinates[i,index]
+            omega[1] = ordinates[i_ordinates,index]
             index += 1
         if z_deg != -1:
             omega[2] = ordinates[i,index]
-    x_range = range(Nx) if omega[0] >= 0 else range(Nx-1, -1, -1)
-    y_range = range(Ny) if omega[1] >= 0 else range(Ny-1, -1, -1)
-    z_range = range(Nz) if omega[2] >= 0 else range(Nz-1, -1, -1)
-
+        x_range = range(Nx) if omega[0] >= 0 else range(Nx-1, -1, -1)
+        y_range = range(Ny) if omega[1] >= 0 else range(Ny-1, -1, -1)
+        z_range = range(Nz) if omega[2] >= 0 else range(Nz-1, -1, -1)
+        
     # Traverse the mesh in the determined order
-    for x in x_range:
-        for y in y_range:
-            for z in z_range:
+        for x in x_range:
+            for y in y_range:
+                for z in z_range:
                 
-                solve_SN(omega,x,y,z,mcdc)
-                
+                    err=solve_SN(omega,i_ordinates,x,y,z,mcdc)
+                    max_err = min(max_err,err)
+
+    update_collided_flux(mcdc)        
+    return max_err
+
 @njit
-def solve_SN(Omega,x,y,z,mcdc):
+def update_collided_flux(mcdc):
+    k_eff = mcdc["k_eff"]
+
+    hybrid = mcdc["technique"]["hybrid"]    
+    t_idx = hybrid["time_step_idx"] 
+    mesh = hybrid["mesh"]
+    ordinates = hybrid["SN"]["ordinates"]
+    Nx = mesh["Nx"]
+    Ny = mesh["Ny"]
+    Nz = mesh["Nz"]
+    flux = hybrid["SN"]["collided_flux"]    
+    flux =  np.tensordot(hybrid["SN"]["coef"], ordinates[:,-1], axes=([-1], [0]))
+    for x in range(Nx):
+        for y in range(Ny):
+            for z in range(Nz):        
+                mat_idx = mcdc["technique"]["hybrid"]["material_idx"][t_idx-1, x, y, z] 
+                material = mcdc["materials"][mat_idx]
+                chi_s = material["chi_s"]
+                SigmaS = material["scatter"]
+                eff_scatter = np.tensordot(chi_s,SigmaS[:,None,None,None,None,None,None]*flux[:,:,:,:,x,y,z], axes=([0],[0]))
+                material = mcdc["nuclides"][mat_idx]
+
+                chi_p = material["chi_p"]
+                chi_d = material["chi_d"]
+                nu_p = material["nu_p"]
+                nu_d = material["nu_d"]
+                SigmaF = material["fission"]
+                F_p = np.tensordot(chi_p, (nu_p * SigmaF)[:,None,None,None,None,None,None] * flux[:,:,:,:,x,y,z], axes=([0],[0]))
+        
+                F_d = nu_d.T[:, :, None, None, None, None, None] * SigmaF[:, None, None, None, None, None, None] * flux[:,:,:,:,x,y,z]
+                F_d = F_d.sum(axis=1)  # shape: (J, I, J, L, X, Y, Z)
+                F_d = np.tensordot(chi_d, F_d, axes=([0], [0]))  # shape: (G, I, J, L, X, Y, Z)
+                eff_fission = F_p+F_d
+    flux = eff_fission/k_eff+eff_scatter    
+     
+@njit
+def solve_SN(Omega,i_ordinates,x,y,z,mcdc):
 
     
-    ########################
-    hybrid = mcdc["technique"]["hybrid"]
+   
+    hybrid = mcdc["technique"]["hybrid"]    
+    err = 0
+
+    
+    tensor = ["tensor_x", "tensor_y", "tensor_z"] 
+    
+    signs = np.sign(Omega[0:-1]).astype(int)
+    effective_uncollided_flux = hybrid["SN"]["uncollided_flux"][:,x,y,z]
+    effective_collided_flux = hybrid["SN"]["collided_flux"][:,:,:,:,x,y,z]
+    coef_loc = hybrid["SN"]["coef"][:,:,:,:,x,y,z,i_ordinates]
+    coef_down_x, coef_down_y, coef_down_z = downstream_coef(x,y,z,i_ordinates,signs,mcdc)
+    
+    #updown = int(Omega[idx]<0)
+    #tensor = hybrid["SN"][tensors[idx]][:,:,updown,:]
+    tensor_x = hybrid["SN"]["tensor_x"][:,:,int(Omega[0]<0),:]
+    tensor_y = hybrid["SN"]["tensor_y"][:,:,int(Omega[1]<0),:]
+    tensor_z = hybrid["SN"]["tensor_z"][:,:,int(Omega[2]<0),:]    
+        
+    ##Set up RHS
+    RHS = np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,-1],tensor_y[:,:,-1],tensor_z[:,:,-1],effective_collided_flux)    
+    RHS[:,0,0,0] += effective_uncollided_flux
+    RHS -= Omega[0]*np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,-2],tensor_y[:,:,-1],tensor_z[:,:,-1],coef_down_x)
+    RHS -= Omega[1]*np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,-1],tensor_y[:,:,-2],tensor_z[:,:,-1],coef_down_y)
+    RHS -= Omega[2]*np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,-1],tensor_y[:,:,-1],tensor_z[:,:,-2],coef_down_z)
     
     
     t_idx = hybrid["time_step_idx"] 
     t = hybrid["mesh"]["t"]
-    dt_inv = 1/(t[t_idx]-t[t_idx-1])
-    
     mat_idx = mcdc["technique"]["hybrid"]["material_idx"][t_idx-1, x, y, z] 
-    sigmaT =  mcdc["materials"][mat_idx]["total"]+dt_inv
+    material = mcdc["materials"][mat_idx]
+    
+    dt_inv = 1/(t[t_idx]-t[t_idx-1])    
+    sigmaT =  material["total"]+1/material["speed"]*dt_inv
     n_dim = np.count_nonzero(Omega[0:-1])
-    idz = np.nonzero(Omega[0:-1])[0]
-    tensors = ["tensor_x", "tensor_y", "tensor_z"] 
-    coefs = ["ceof_x","coef_y", "coef_z"]
+    idz = np.concatenate([np.nonzero(Omega[0:-1])[0], np.where(Omega[0:-1]==0)[0]])
     
-    dx_in = dy_in = dz_in = 1
+    dxyz_inverse  = np.ones(3)
     if Omega[0] !=0:
-        dx_in = 1/(hybrid["mesh"]["x"][x+1]-hybrid["mesh"]["x"][x])
+        dxyz_inverse[0] = 1/(hybrid["mesh"]["x"][x+1]-hybrid["mesh"]["x"][x])
     if Omega[1] !=0:
-        dy_in = 1/(hybrid["mesh"]["y"][y+1]-hybrid["mesh"]["y"][y])    
+        dxyz_inverse[1]  = 1/(hybrid["mesh"]["y"][y+1]-hybrid["mesh"]["y"][y])    
     if Omega[2] !=0:
-        dz_in = 1/(hybrid["mesh"]["z"][z+1]-hybrid["mesh"]["z"][z])
-        
-        
-    LHS_inv = []
-    RHS = []
-    for i in range(n_dim):
-        idx = idz[i]
-        idx1 = idz[0]
-        updown = int(Omega[idx]<0)
-        tensor = hybrid["SN"][tensors[idx]][:,:,updown,:]
-        coef = hybrid["SN"][coefs[idx]]
-        #mean_coef = 0 #############
-        #ceof = coef[]
-        
-        #R = 
-        LHS = (dy_in*dz_in)/Omega[idx]*tensor[:,:,0]
-        if sigmaT != 0 and n_dim ==1:
-            LHS += (
-                (dy_in*dz_in)**3/Omega[idx1]**3*tensor[:,:,1] 
-                        +dx_in*dy_in**2*dz_in**3/sigmaT/(Omega[idx1]**2)*tensor[:,:,2]
-                        )
-        if n_dim > 1:
-            idx2 = idz[1]
-            LHS += ((dy_in*dz_in)**3/Omega[idx1]**3/Omega[idx1]**3*tensor[:,:,1]  
-                    +dx_in*dy_in**2*dz_in**3/Omega[idx1]**2/Omega[idx2]*tensor[:,:,2]
-                    )
-            if sigmaT != 0 and n_dim ==2:
-                LHS += ( 
-                    dx_in**3*dy_in**2*dz_in**5/Omega[idx1]**2/Omega[idx2]**3*tensor[:,:,3]
-                    +dx_in**3*dy_in**3*dz_in**4/Omega[idx1]**2/Omega[idx2]**2/sigmaT * tensor[:,:,4]                                              
-                    )
-        if n_dim == 3:
-            idx3 = idz[2]
-            LHS += (
-                dx_in**3*dy_in**2*dz_in**5/Omega[idx1]**2/Omega[idx2]**3*tensor3[:,:,3]
-            +dx_in**3*dy_in**3*dz_in**4/Omega[idx1]**2/Omega[idx2]**2/Omega[idx3] * tensor3[:,:,4] 
-            )
-        if sigmaT != 0 and n_dim ==3:
-            LHS +=(
-                dx_in**5*dy_in**3*dz_in**4/Omega[idx1]**2/Omega[idx2]**2/Omega[idx3]**3*tensor3[:,:,5]
-                +(dx_in*dy_in*dz_in)**5/Omega[idx1]**2/Omega[idx2]**2/Omega[idx3]**2/sigmaT*tensor3[:,:,6]
-                )
-            
-        LHS_inv.append(LHS)
-        
-           
-            
-            
+        dxyz_inverse[2]  = 1/(hybrid["mesh"]["z"][z+1]-hybrid["mesh"]["z"][z])
     
+    idx1 = idz[0]
+    d2_in = dxyz_inverse[1]
+    d3_in = dxyz_inverse[2]
+    new_coef = (d2_in*d3_in)/Omega[idx1]*np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,0],tensor_y[:,:,0],tensor_z[:,:,0],RHS)
+    if sigmaT != 0 and n_dim ==1:
+        d1_in = dxyz_inverse[1]
+        idx2 =idz[1]
+        new_coef += (d2_in*d3_in)**3/Omega[idx1]**3*np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,1],tensor_y[:,:,1],tensor_z[:,:,1],RHS) 
+        new_coef += d1_in*d2_in**2*d3_in**3/sigmaT/(Omega[idx1]**2)* np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,2],tensor_y[:,:,2],tensor_z[:,:,2],RHS) 
+    if n_dim > 1:
+        d1_in = dxyz[1]
+        idx2 = idz[1]
+        new_coef += (d2_in*d3_in)**3/Omega[idx1]**3*np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,1],tensor_y[:,:,1],tensor_z[:,:,1],RHS) 
+        new_coef += d1_in*d2_in**2*d3_in**3/(Omega[idx1]**2)/Omega[idx2]* np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,2],tensor_y[:,:,2],tensor_z[:,:,2],RHS) 
+        if sigmaT != 0 and n_dim ==2:
+            new_coef += d1_in**3*d2_in**2*d3_in**5/Omega[idx1]**2/Omega[idx2]**3*np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,3],tensor_y[:,:,3],tensor_z[:,:,3],RHS) 
+            new_coef += d1_in**3*d2_in**3*d3_in**4/Omega[idx1]**2/Omega[idx2]**2/sigmaT * np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,4],tensor_y[:,:,4],tensor_z[:,:,4],RHS) 
+    if n_dim == 3:
+        idx3 = idz[2]
+        new_coef += d1_in**3*d2_in**2*d3_in**5/Omega[idx1]**2/Omega[idx2]**3*np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,3],tensor_y[:,:,3],tensor_z[:,:,3],RHS) 
+        new_coef += d1_in**3*d2_in**3*d3_in**4/Omega[idx1]**2/Omega[idx2]**2/Omega[idx3] *np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,4],tensor_y[:,:,4],tensor_z[:,:,4],RHS) 
+    if sigmaT != 0 and n_dim ==3:
+        new_coef += d1_in**5*d2_in**3*d3_in**4/Omega[idx1]**2/Omega[idx2]**2/Omega[idx3]**3*np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,5],tensor_y[:,:,5],tensor_z[:,:,5],RHS) 
+        new_coef += (d1_in*d2_in*d3_in)**5/Omega[idx1]**2/Omega[idx2]**2/Omega[idx3]**2/sigmaT*np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,6],tensor_y[:,:,6],tensor_z[:,:,6],RHS) 
+
+        
+        
+    err+= np.linalg.norm(new_coef - coef_loc) 
+    hybrid["SN"]["coef"][:,:,:,:,x,y,z,i_ordinates] = new_coef    
+        
+    return err  
+     
+@njit 
+def downstream_coef(x,y,z,i_ordinates,signs, mcdc):    
+     
+    mesh = mcdc["technique"]["hybrid"]["mesh"] 
+    if x == 0 or x == mesh["Nx"]-1:
+        #Vacuum boundaries, reflective not done yet
+        down_x = np.zeros_like(mcdc["technique"]["hybrid"]["SN"]["coef"][:,:,:,:,x,y,z,i_ordinates])
+    else:
+        down_x = np.zeros_like(mcdc["technique"]["hybrid"]["SN"]["coef"][:,:,:,:,x-signs[0],y,z,i_ordinates])
+
+    if y == 0 or y == mesh["Ny"]-1:
+        #Vacuum boundaries, reflective not done yet
+        down_y = np.zeros_like(mcdc["technique"]["hybrid"]["SN"]["coef"][:,:,:,:,x,y,z,i_ordinates])
+    else:
+        down_y = np.zeros_like(mcdc["technique"]["hybrid"]["SN"]["coef"][:,:,:,:,x,y-signs[1],z,i_ordinates])
+
+    if z == 0 or z == mesh["Nz"]-1:
+        #Vacuum boundaries, reflective not done yet
+        down_z = np.zeros_like(mcdc["technique"]["hybrid"]["SN"]["coef"][:,:,:,:,x,y,z,i_ordinates])
+    else:
+        down_z = np.zeros_like(mcdc["technique"]["hybrid"]["SN"]["coef"][:,:,:,:,x,y,z-signs[0],i_ordinates])
+
+    return down_x, down_y,down_z
+
+
+@njit 
+def find_bcs(coords,signs,idx,mcdc):
+    """only vacuum conditions so far
+    for reflective return original coords, alternate, where 
+    alternate =(1,-1,1,-1,...) with size of degree in idx direction"""
+    
+    mesh = mcdc["technique"]["hybrid"]["mesh"] 
+    bounds =[mesh["Nx"],  mesh["Ny"],mesh["Nz"]]
+    if ((coords[idx]-signs[idx]) < 0) or ((coords[idx]-signs[idx]) >= bounds[idx]):
+        return tuple(coords), 0           
+    coords[idx]-=signs[idx]
+    return tuple(coords), 1
     
     
     
@@ -629,7 +718,7 @@ def hybrid_relabel(mcdc):
     
     # sweep particles
     hybrid_loop_source(mcdc)
-    hybrid["uncollided_flux"].fill(0)
+    hybrid["SN"]["uncollided_flux"].fill(0)
 # ===========================================================================
 # GMRES Linear operator
 # =============================================================================
