@@ -1328,7 +1328,7 @@ def make_type_technique(input_deck):
         ("mode", str_),
     ]
     n_directions = card["hybrid"]["SN"]["n_directions"]     
-    n_ordinates  = n_directions = card["hybrid"]["SN"]["n_directions"]     
+    n_ordinates  = card["hybrid"]["SN"]["n_ordinates"]     
     if n_directions == n_ordinates:
         directions = 1
     if n_directions == n_ordinates**2:
