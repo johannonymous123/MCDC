@@ -190,9 +190,9 @@ class InputDeck:
                     "uncollided_flux":np.zeros([1,1,1,1]),
                     "collided_flux":np.zeros([1,1,1,1,1,1,1]),                    
                     "ordinates":np.zeros([1,4]),
-                    "tensor_x":np.ones([1,1,2,7]),
-                    "tensor_y":np.ones([1,1,2,7]),
-                    "tensor_z":np.ones([1,1,2,7]),
+                    "tensor_x":np.ones([1,1,2,4]),
+                    "tensor_y":np.ones([1,1,2,4]),
+                    "tensor_z":np.ones([1,1,2,4]),
                         
                 },
             },

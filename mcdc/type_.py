@@ -1338,7 +1338,6 @@ def make_type_technique(input_deck):
     x_deg = card["hybrid"]["SN"]["x_degree"]
     y_deg = card["hybrid"]["SN"]["y_degree"]
     z_deg = card["hybrid"]["SN"]["z_degree"]
-    n_ten = 3+2*directions
     
     sn_list=[]
     if card["hybridMC"]:
@@ -1349,9 +1348,9 @@ def make_type_technique(input_deck):
         sn_list += [("coef", float64, (Ng,x_deg+1,y_deg+1,z_deg+1, Nx,Ny,Nz,n_directions))]        
         sn_list += [("n_directions", int64)]
         sn_list += [("ordinates", float64, (get_work_size(n_directions),directions+1))]
-        sn_list += [("tensor_x", float64, (x_deg+1,x_deg+1,2,n_ten))]
-        sn_list += [("tensor_y", float64, (y_deg+1,y_deg+1,2,n_ten))]
-        sn_list += [("tensor_z", float64, (z_deg+1,z_deg+1,2,n_ten))]
+        sn_list += [("tensor_x", float64, (x_deg+1,x_deg+1,2,4))]
+        sn_list += [("tensor_y", float64, (y_deg+1,y_deg+1,2,4))]
+        sn_list += [("tensor_z", float64, (z_deg+1,z_deg+1,2,4))]
         sn_list +=[("uncollided_flux", float64,(Ng,Nx,Ny,Nz))]
         sn_list +=[("collided_flux", float64,(Ng,x_deg+1,y_deg+1,z_deg+1,Nx,Ny,Nz))]
        

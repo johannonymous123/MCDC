@@ -272,8 +272,10 @@ def hybrid_prepare_particles(mcdc):
     Nx = len(mesh["x"]) - 1
     Ny = len(mesh["y"]) - 1
     Nz = len(mesh["z"]) - 1
+    Nt = len(mesh["t"]) - 1
+
     # total number of spatial cells
-    N_total = Nx * Ny * Nz
+    N_total = Nx * Ny * Nz * Nt
     # outter mesh boundaries for sampling position
     xa = mesh["x"][0]
     xb = mesh["x"][-1]
@@ -290,7 +292,7 @@ def hybrid_prepare_particles(mcdc):
         P_new = P_new_arr[0]
         # assign initial group, time, and rng_seed (not used)
         P_new["g"] = 0
-        P_new["t"] = hybrid_sample_position(xa, xb, samples[n, 0])
+        P_new["t"] = hybrid_sample_position(ta, tb, samples[n, 0])
         P_new["rng_seed"] = 0
         # assign direction
         P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 1])
@@ -368,7 +370,7 @@ def hybrid_reset_particles(mcdc):
         P_new = P_new_arr[0]
         # assign initial group, time, and rng_seed (not used)
         P_new["g"] = 0
-        P_new["t"] = hybrid_sample_position(xa, xb, samples[n, 0])
+        P_new["t"] = hybrid_sample_position(ta, tb, samples[n, 0])
         P_new["rng_seed"] = 0
         # assign direction
         P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 1])
@@ -885,9 +887,9 @@ def hybrid_score_tallies(P_arr, distance, mcdc):
 def hybrid_flux(SigmaT, w, distance, dV):
     # Score Flux
     if SigmaT.all() > 0.0:
-        return w * (1 - np.exp(-(distance * SigmaT))) / (SigmaT * dV)
+        return w * (1 - np.exp(-(distance * SigmaT))) / (SigmaT)# * dV)
     else:
-        return distance * w / dV
+        return distance * w #/ dV
 
 
 @toggle("hybridMC")
