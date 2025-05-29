@@ -1617,6 +1617,8 @@ def make_type_global(input_deck):
     # hybridMC bank adjustment
     if input_deck.technique["hybridMC"]:
         bank_source = particle_bank(N_work)
+        bank_future = particle_bank(1+2*N_work)
+
         if input_deck.setting["mode_eigenvalue"]:
             bank_census = particle_bank(0)
             bank_future = particle_bank(0)

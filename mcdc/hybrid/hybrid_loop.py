@@ -116,52 +116,24 @@ def hybrid_simulation(mcdc_arr):
 @njit
 def source_iteration(mcdc):
 
-    simulation_end = False
+
     hybrid = mcdc["technique"]["hybrid"]
     
     total_source_old = hybrid["total_source"].copy()
 
     time_steps = hybrid["mesh"]["t"]
-    Nt = len(time_steps)
     # reset particle bank size
     kernel.set_bank_size(mcdc["bank_source"], 0)
     # initialize particles with LDS
     hybrid_kernel.hybrid_prepare_particles(mcdc)
     
-  #  for times in time_steps:
-   #     hybrid_particle_sweep(0, times)    #ToDo: Iterate
-    #    discrete_ordinates_sweep()
-     #   hybrid_particle_sweep(tn_start,times)
-      #  tn_start = tn_end
-        
-        
-        
-    while not simulation_end:
+    #while not simulation_end:
+    for _ in time_steps[:-1]:    
         mcdc["technique"]["hybrid"]["time_step_idx"]+=1
 
-        hybrid_time_step(mcdc)
-
-        
-        #hybrid_sweep(mcdc)
-        
-        hybrid["iteration_count"] += 1
-        # calculate norm of sources
-        hybrid["residual"] = hybrid_kernel.hybrid_res(hybrid["total_source"], total_source_old)
-        # hybridMC convergence criteria
-        
-        
-        if (hybrid["iteration_count"] == hybrid["iterations_max"]) or (
-            hybrid["residual"] <= hybrid["tol"] or hybrid["time_steps_idx"]== Nt-1
-        ):
-            simulation_end = True
-
-        # Print progress
-        if not mcdc["setting"]["mode_eigenvalue"]:
-            with objmode():
-                print_progress_hybrid(mcdc)
-
-        # set  source_old = current source
-        total_source_old = hybrid["total_source"].copy()
+        hybrid_time_step(mcdc)        
+     
+        #total_source_old = hybrid["total_source"].copy()
         
      # sum resultant flux on all processors
     hybrid_kernel.hybrid_reduce_tallies(hybrid)
@@ -390,10 +362,12 @@ def hybrid_loop_particle(P_arr, prog):
     current_t_idx = mcdc["technique"]["hybrid"]["time_step_idx"]
     current_t = mcdc["technique"]["hybrid"]["mesh"]["t"][current_t_idx]
     prev_t = mcdc["technique"]["hybrid"]["mesh"]["t"][current_t_idx-1]
+    #if P["t"] > current_t:
+    #    adapt.add_source(P_arr, mcdc)       #Deal with later
     while P["alive"] and P["t"]<current_t:  #Move Particles to end of current step
         hybrid_step_particle(P_arr, prog)
     if P["hybrid"]["birth_time"] < prev_t and P["alive"]:    #Particles that were around current step won't be relabeled and move on next step 
-        adapt.add_source(P_arr, mcdc)
+        adapt.add_future(P_arr, mcdc)
         
 
 @njit
@@ -483,10 +457,12 @@ def hybrid_sweep(mcdc):
 def hybrid_time_step(mcdc):
     n_particles = mcdc["setting"]["N_particle"]
     n_directions = mcdc["technique"]["hybrid"]["SN"]["ordinates"].shape[0]
+    print("MC: \n")
     hybrid_particle_sweep(mcdc)
     kernel.distribute_work(n_directions,mcdc)
     hybrid_SN_sweep(mcdc)
     kernel.distribute_work(n_particles,mcdc)
+    print("Relabeling: \n")
     hybrid_relabel(mcdc)
     
 
@@ -494,11 +470,45 @@ def hybrid_time_step(mcdc):
 def hybrid_particle_sweep(mcdc):
     hybrid = mcdc["technique"]["hybrid"]
     # sweep particles
+    hybrid_update_current_source(mcdc)
     hybrid_loop_source(mcdc)
     kernel.allreduce_array(hybrid["uncollided_flux"])
 
     
-          
+       
+@njit
+def hybrid_update_current_source(mcdc):     
+#def check_future_bank(mcdc):
+    # Get the data needed
+    bank_future = mcdc["bank_future"]
+    bank_source = mcdc["bank_source"]
+    #next_census_time = mcdc["setting"]["census_time"][mcdc["idx_census"] + 1]
+    current_t_idx = mcdc["technique"]["hybrid"]["time_step_idx"]
+    current_t = mcdc["technique"]["hybrid"]["mesh"]["t"][current_t_idx]
+    # Particle container
+    P_arr = adapt.local_array(1, type_.particle_record)
+    P = P_arr[0]
+
+    # Loop over all particles in future bank
+    N = kernel.get_bank_size(bank_future)
+    for i in range(N):
+        # Get the next future particle index
+        idx = i - kernel.get_bank_size(bank_source)
+        kernel.copy_recordlike(P_arr, bank_future["particles"][idx : idx + 1])
+
+        # Promote the future particle to census bank
+        if P["t"] < current_t:
+            adapt.add_source(P_arr, mcdc)
+            kernel.add_bank_size(bank_future, -1)
+
+            # Consolidate the emptied space in the future bank
+            j = kernel.get_bank_size(bank_future)
+            kernel.copy_recordlike(
+                bank_future["particles"][idx : idx + 1],
+                bank_future["particles"][j : j + 1],
+            )
+
+ 
     
 @njit    
 def hybrid_SN_sweep(mcdc):
@@ -512,8 +522,7 @@ def hybrid_SN_sweep(mcdc):
         
         
         iterate = err > hybrid["tol"] and iterations < hybrid["iterations_max"]
-    
-
+    print(f"\n SN converged in {iterations} iterations \n")
 @njit
 def single_SN_sweep(mcdc):
     sn = mcdc["technique"]["hybrid"]["SN"]  
@@ -728,6 +737,7 @@ def hybrid_relabel(mcdc):
     # sweep particles
     hybrid_loop_source(mcdc)
     hybrid["SN"]["uncollided_flux"].fill(0)
+    
 # ===========================================================================
 # GMRES Linear operator
 # =============================================================================

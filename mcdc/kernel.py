@@ -1737,9 +1737,9 @@ def pct_splitting_roulette_weight(seed, mcdc):
 @njit
 def move_particle(P_arr, distance, mcdc):
     P = P_arr[0]
-    P["x"] += P["ux"] * distance
-    P["y"] += P["uy"] * distance
-    P["z"] += P["uz"] * distance
+    P["x"] += P["ux"] * distance 
+    P["y"] += P["uy"] * distance 
+    P["z"] += P["uz"] * distance 
     P["t"] += distance / physics.get_speed(P_arr, mcdc)
 
 

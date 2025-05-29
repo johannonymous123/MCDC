@@ -30,11 +30,13 @@ def samples_init(mcdc):
     N, dim = mcdc["technique"]["hybrid"]["samples"].shape
     N_start = mcdc["mpi_work_start"]
     if mcdc["technique"]["hybrid"]["sample_method"] == "halton":
-        mcdc["technique"]["hybrid"]["samples"] = halton(N, dim, skip=N_start)
-        mcdc["technique"]["hybrid"]["samples"][0,:].sort()
+        samples = halton(N, dim, skip=N_start)
+        samples =samples[samples[:,0].argsort()]
+        mcdc["technique"]["hybrid"]["samples"] = samples
     if mcdc["technique"]["hybrid"]["sample_method"] == "random":
-        mcdc["technique"]["hybrid"]["samples"] = random(N, dim)
-        mcdc["technique"]["hybrid"]["samples"][0,:].sort()
+        samples = random(N, dim)        
+        samples =samples[samples[:,0].argsort()]
+        mcdc["technique"]["hybrid"]["samples"] = samples
 
 
 @toggle("hybridMC")
@@ -304,7 +306,7 @@ def hybrid_prepare_particles(mcdc):
         )
         x, y, z, t, outside = mesh_.structured.get_indices(P_new_arr, mesh)
         q = Q[:, t, x, y, z].copy()
-        dV = hybrid_cell_volume(x, y, z, mesh)
+        dV = hybrid_cell_volume(x, y, z,t, mesh)
         # Source tilt
         hybrid_tilt_source(t, x, y, z, P_new_arr, q, mcdc)
         # set particle weight
@@ -312,7 +314,7 @@ def hybrid_prepare_particles(mcdc):
         P_new["w"] = P_new["hybrid"]["w"].sum()
         P_new["hybrid"]["birth_time"] = P_new["t"]
         # add to source bank
-        adapt.add_source(P_new_arr, mcdc)
+        adapt.add_future(P_new_arr, mcdc)
 
 @toggle("hybridMC")
 def hybrid_reset_particles(mcdc):
@@ -343,8 +345,9 @@ def hybrid_reset_particles(mcdc):
     Nx = len(mesh["x"]) - 1
     Ny = len(mesh["y"]) - 1
     Nz = len(mesh["z"]) - 1
+    Nt = len(mesh["t"]) - 1
     # total number of spatial cells
-    N_total = Nx * Ny * Nz
+    N_total = Nx * Ny * Nz * Nt
     # outter mesh boundaries for sampling position
     xa = mesh["x"][0]
     xb = mesh["x"][-1]
@@ -354,8 +357,8 @@ def hybrid_reset_particles(mcdc):
     zb = mesh["z"][-1]
     ta = mesh["t"][0]
     tb = mesh["t"][-1]
-    t_prev = mesh["t"][hybrid["time_step_idx"]-1]
-    t_curr = mesh["t"][hybrid["time_step_idx"]]
+    t_prev = (mesh["t"][hybrid["time_step_idx"]-1]-ta)/(tb-ta)
+    t_curr = (mesh["t"][hybrid["time_step_idx"]]-ta)/(tb-ta)
     t_idx = hybrid["time_step_idx"] 
     
     
@@ -393,7 +396,7 @@ def hybrid_reset_particles(mcdc):
         f = np.einsum('gijk,i,j,k->g', eff_collided_flux[...,x,y,z], phi_x, phi_y, phi_z)
 
         q = Q[:, t, x, y, z].copy()+max([f,0])+eff_uncollided_flux[:,x,y,z].copy()
-        dV = hybrid_cell_volume(x, y, z, mesh)
+        dV = hybrid_cell_volume(x, y, z,t, mesh)
         # Source tilt
         hybrid_tilt_source(t, x, y, z, P_new_arr, q, mcdc)
         # set particle weight
@@ -438,6 +441,8 @@ def ordinates_init(mcdc):
                 for (x, y) in unit_circle_points for node, weight in zip(nodes, weights)
                 ])
         sn["ordinates"] = ordinates[work_start:work_start+work_size,:]
+
+
 
 @toggle("hybridMC")
 def tensor_init(mcdc):
@@ -508,19 +513,22 @@ def build_tensor(mcdc, flag, axis):
     sn[tensor][:,:,1,1] = D
     
 @toggle("hybridMC")
-def hybrid_cell_volume(x, y, z, mesh):
+def hybrid_cell_volume(x, y, z,t, mesh):
     """
     Calculate the volume of the cartesian spatial cell.
 
     """
-    dx = dy = dz = 1
+    dx = dy = dz = dt = 1
     if (mesh["x"][x] != -INF) and (mesh["x"][x] != INF):
         dx = mesh["x"][x + 1] - mesh["x"][x]
     if (mesh["y"][y] != -INF) and (mesh["y"][y] != INF):
         dy = mesh["y"][y + 1] - mesh["y"][y]
     if (mesh["z"][z] != -INF) and (mesh["z"][z] != INF):
         dz = mesh["z"][z + 1] - mesh["z"][z]
-    dV = dx * dy * dz
+    if (mesh["t"][z] != -INF) and (mesh["t"][z] != INF):
+        dz = mesh["t"][t + 1] - mesh["t"][t]
+        
+    dV = dx * dy * dz * dt
     return dV
 
 
@@ -700,6 +708,9 @@ def hybrid_update_source(mcdc):
     hybrid["source"] = scatter + (fission / keff) + fixed
 
 
+
+
+
 @toggle("hybridMC")
 def hybrid_tilt_source(t, x, y, z, P_arr, Q, mcdc):
     P = P_arr[0]
@@ -842,7 +853,7 @@ def hybrid_score_tallies(P_arr, distance, mcdc):
     
     prev_t = mcdc["technique"]["hybrid"]["mesh"]["t"][current_t_idx-1]
     
-    if P["hybrid"]["birth_time"] < prev_t:
+    if  P["hybrid"]["birth_time"] < prev_t:
         score_bin["flux"]["bin"][:, t, x, y, z] += flux
     
         # Score effective source tallies
@@ -887,9 +898,9 @@ def hybrid_score_tallies(P_arr, distance, mcdc):
 def hybrid_flux(SigmaT, w, distance, dV):
     # Score Flux
     if SigmaT.all() > 0.0:
-        return w * (1 - np.exp(-(distance * SigmaT))) / (SigmaT)# * dV)
+        return w * (1 - np.exp(-(distance * SigmaT))) / (SigmaT * dV)
     else:
-        return distance * w #/ dV
+        return distance * w / dV
 
 
 @toggle("hybridMC")

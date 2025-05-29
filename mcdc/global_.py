@@ -70,7 +70,7 @@ class InputDeck:
             "bank_active_buff": 100,
             "bank_census_buff": 1.0,
             "bank_source_buff": 1.0,
-            "bank_future_buff": 0.5,
+            "bank_future_buff": .5,
             # Portability
             "target": "cpu",
         }
