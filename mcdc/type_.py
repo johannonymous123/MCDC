@@ -240,7 +240,9 @@ def make_type_particle(input_deck):
         
     iqmc_struct = [("w", float64, (G,))]
     hybrid_struct = [("w", float64, (G,)),
-                     ("birth_time",float64)]
+                     ("birth_time",float64),
+                     ("p_scatter",uint64),
+                     ]
 
     struct += [("hybrid", hybrid_struct)] 
     struct += [("iqmc", iqmc_struct)]
@@ -285,7 +287,8 @@ def make_type_particle_record(input_deck):
     iqmc_struct = [("w", float64, (G,))]
     hybrid_struct = [
                     ("w", float64, (G,)),
-                    ("birth_time",float64)
+                    ("birth_time",float64),
+                    ("p_scatter",uint64),
                      ]
     
     struct += [("hybrid", hybrid_struct)]
@@ -1265,12 +1268,21 @@ def make_type_technique(input_deck):
     hybrid_list += [("samples", float64, (work_size, N_dim))]
     # make global arrays
     hybrid_list += [("fixed_source", float64, (Ng, Nt, Nx, Ny, Nz))]
+    hybrid_list += [("phi0", float64, (Ng, Nx, Ny, Nz))]
+    hybrid_list += [("boundary_x_pos", float64, (Ng, Nt,  Ny, Nz))]
+    hybrid_list += [("boundary_x_neg", float64, (Ng, Nt,  Ny, Nz))]
+    hybrid_list += [("boundary_y_pos", float64, (Ng, Nt, Nx,  Nz))]
+    hybrid_list += [("boundary_y_neg", float64, (Ng, Nt, Nx,  Nz))]
+    hybrid_list += [("boundary_z_pos", float64, (Ng, Nt, Nx, Ny))]
+    hybrid_list += [("boundary_z_neg", float64, (Ng, Nt, Nx, Ny))]
+
     hybrid_list += [("material_idx", int64, (Nt, Nx, Ny, Nz))]
     hybrid_list += [("source", float64, (Ng, Nt, Nx, Ny, Nz))]
     total_size = (Ng * Nt * Nx * Ny * Nz) * card["hybrid"]["krylov_vector_size"]
     hybrid_list += [(("total_source"), float64, (total_size,))]
-    hybrid_list += [("uncollided_flux", float64, (Ng,  Nx, Ny, Nz))]
-    hybrid_list += [("collided_flux", float64, (Ng,  Nx, Ny, Nz))]
+    #hybrid_list += [("uncollided_flux", float64, (Ng,  Nx, Ny, Nz))]
+    #hybrid_list += [("flux_n_collision", float64, (Ng,  Nx, Ny, Nz))]
+    #hybrid_list += [("collided_flux", float64, (Ng,  Nx, Ny, Nz))]
 
     hybrid_list += [("time_step_idx", int64)]
 
@@ -1326,6 +1338,7 @@ def make_type_technique(input_deck):
         ("fixed_source_solver", str_),
         ("sample_method", str_),
         ("mode", str_),
+        ("n_scatter", int64),
     ]
     n_directions = card["hybrid"]["SN"]["n_directions"]     
     n_ordinates  = card["hybrid"]["SN"]["n_ordinates"]     
@@ -1352,6 +1365,7 @@ def make_type_technique(input_deck):
         sn_list += [("tensor_y", float64, (y_deg+1,y_deg+1,2,4))]
         sn_list += [("tensor_z", float64, (z_deg+1,z_deg+1,2,4))]
         sn_list +=[("uncollided_flux", float64,(Ng,Nx,Ny,Nz))]
+        sn_list +=[("flux_n_collisions", float64,(Ng,Nx,Ny,Nz))]
         sn_list +=[("collided_flux", float64,(Ng,x_deg+1,y_deg+1,z_deg+1,Nx,Ny,Nz))]
        
 
@@ -1617,7 +1631,7 @@ def make_type_global(input_deck):
     # hybridMC bank adjustment
     if input_deck.technique["hybridMC"]:
         bank_source = particle_bank(N_work)
-        bank_future = particle_bank(1+2*N_work)
+        bank_future = particle_bank(1+N_work)
 
         if input_deck.setting["mode_eigenvalue"]:
             bank_census = particle_bank(0)

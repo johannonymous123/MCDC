@@ -1549,7 +1549,7 @@ def iQMC(
 
 
 def hybridMC(
-    phi0=None,
+    phi0=None,    
     g=None,
     t=None,
     x=None,
@@ -1559,6 +1559,12 @@ def hybridMC(
     source_x0=None,
     source_y0=None,
     source_z0=None,
+    boundary_x_pos=None,
+    boundary_x_neg=None,
+    boundary_y_pos=None,
+    boundary_y_neg=None,
+    boundary_z_pos=None,
+    boundary_z_neg=None,
     krylov_restart=None,
     fixed_source=None,
     x_degree = -1,
@@ -1571,6 +1577,7 @@ def hybridMC(
     sample_method="halton",
     mode="fixed",
     scores=[],
+    n_scatter = None
 ):
     """
     Activate the iterative Quasi-Monte Carlo (hybridMC) neutron transport method.
@@ -1671,28 +1678,78 @@ def hybridMC(
         card["hybrid"]["SN"]["n_directions"] = 2*n_ordinates**2
         
     ax_expand = []
+    phi0_expand = []
+    bdry_x_expand = []
+    bdry_y_expand = []
+    bdry_z_expand = []
     if g is None:
         ax_expand.append(0)
+        phi0_expand.append(0)
+        bdry_x_expand.append(0)
+        bdry_y_expand.append(0)
+        bdry_z_expand.append(0)
     if t is None:
         ax_expand.append(1)
+        bdry_x_expand.append(1)
+        bdry_y_expand.append(1)
+        bdry_z_expand.append(1)
     if x is None:
         ax_expand.append(2)
+        phi0_expand.append(1)
+        bdry_y_expand.append(2)
+        bdry_z_expand.append(2)
     if y is None:
         ax_expand.append(3)
+        phi0_expand.append(2)
+        bdry_x_expand.append(2)
+        bdry_z_expand.append(3)
     if z is None:
         ax_expand.append(4)
-    for ax in ax_expand:
-        phi0 = np.expand_dims(phi0, axis=ax)
-        if fixed_source is not None:
-            fixed_source = np.expand_dims(fixed_source, axis=ax)
-        else:
-            fixed_source = np.zeros_like(phi0)
+        phi0_expand.append(3)
+        bdry_x_expand.append(3)
+        bdry_y_expand.append(3)
+    for ax in ax_expand:        
+        fixed_source = np.expand_dims(fixed_source, axis=ax)
+        
+        
+        
+    if phi0 is not None and t is not None:
+        for ax in phi0_expand:        
+            phi0 = np.expand_dims(phi0, axis=ax)
+        card["hybrid"]["phi0"] = phi0
+    if boundary_x_pos is not None and x is not None:
+        for ax in bdry_x_expand:        
+            boundary_x_pos = np.expand_dims(boundary_x_pos, axis=ax)        
+        card["hybrid"]["boundary_x_pos"] =  boundary_x_pos        
+    if boundary_x_neg is not None and x is not None:
+        for ax in bdry_x_expand:        
+            boundary_x_neg = np.expand_dims(boundary_x_neg, axis=ax)        
+        card["hybrid"]["boundary_x_neg"] =  boundary_x_neg        
+    if boundary_y_pos is not None and y is not None:
+        for ax in bdry_y_expand:        
+            boundary_y_pos = np.expand_dims(boundary_y_pos, axis=ax)        
+        card["hybrid"]["boundary_y_pos"] =  boundary_y_pos        
+    if boundary_y_neg is not None and y is not None:
+        for ax in bdry_y_expand:        
+            boundary_y_neg = np.expand_dims(boundary_y_neg, axis=ax)        
+        card["hybrid"]["boundary_y_neg"] =  boundary_y_neg        
+    if boundary_z_pos is not None and z is not None:
+        for ax in bdry_z_expand:        
+            boundary_z_pos = np.expand_dims(boundary_z_pos, axis=ax)        
+        card["hybrid"]["boundary_z_pos"] =  boundary_z_pos        
+    if boundary_z_neg is not None and z is not None:
+        for ax in bdry_z_expand:        
+            boundary_z_neg = np.expand_dims(boundary_z_neg, axis=ax)        
+        card["hybrid"]["boundary_z_neg"] =  boundary_z_neg        
 
+    
+    
+    
     if krylov_restart is None:
         krylov_restart = maxit
 
     if source0 is None:
-        source0 = np.zeros_like(phi0)
+        source0 = np.zeros_like(fixed_source)
 
     score_list = card["hybrid"]["score_list"]
     for name in scores:
@@ -1701,19 +1758,19 @@ def hybridMC(
     if score_list["source-x"]:
         card["hybrid"]["krylov_vector_size"] += 1
         if source_x0 is None:
-            source_x0 = np.zeros_like(phi0)
+            source_x0 = np.zeros_like(fixed_source)
 
     if score_list["source-y"]:
         card["hybrid"]["krylov_vector_size"] += 1
         if source_y0 is None:
-            source_y0 = np.zeros_like(phi0)
+            source_y0 = np.zeros_like(fixed_source)
 
     if score_list["source-z"]:
         card["hybrid"]["krylov_vector_size"] += 1
         if source_z0 is None:
-            source_z0 = np.zeros_like(phi0)
+            source_z0 = np.zeros_like(fixed_source)
 
-    card["hybrid"]["score"]["flux"] = phi0
+    card["hybrid"]["score"]["flux"] = np.zeros_like(fixed_source)
     card["hybrid"]["score"]["source-x"] = source_x0
     card["hybrid"]["score"]["source-y"] = source_y0
     card["hybrid"]["score"]["source-z"] = source_z0
@@ -1721,7 +1778,8 @@ def hybridMC(
     card["hybrid"]["fixed_source"] = fixed_source
     card["hybrid"]["fixed_source_solver"] = fixed_source_solver
     card["hybrid"]["krylov_restart"] = krylov_restart
-
+    if n_scatter is not None:
+        card["hybrid"]["n_scatter"] = n_scatter
 
 def weight_roulette(w_threshold=0.2, w_survive=1.0):
     """

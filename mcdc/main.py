@@ -66,8 +66,8 @@ def run():
 
     if input_deck.technique["iQMC"]:
         iqmc_validate_inputs(input_deck)
-    if input_deck.technique["hybridMC"]:
-        hybrid_validate_inputs(input_deck)     
+    #if input_deck.technique["hybridMC"]:
+    #    hybrid_validate_inputs(input_deck)     
 
 
     data_arr, mcdc_arr = prepare()

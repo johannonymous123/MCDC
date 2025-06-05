@@ -119,7 +119,7 @@ def source_iteration(mcdc):
 
     hybrid = mcdc["technique"]["hybrid"]
     
-    total_source_old = hybrid["total_source"].copy()
+    #total_source_old = hybrid["total_source"].copy()
 
     time_steps = hybrid["mesh"]["t"]
     # reset particle bank size
@@ -361,12 +361,11 @@ def hybrid_loop_particle(P_arr, prog):
     P = P_arr[0]
     current_t_idx = mcdc["technique"]["hybrid"]["time_step_idx"]
     current_t = mcdc["technique"]["hybrid"]["mesh"]["t"][current_t_idx]
-    prev_t = mcdc["technique"]["hybrid"]["mesh"]["t"][current_t_idx-1]
-    #if P["t"] > current_t:
-    #    adapt.add_source(P_arr, mcdc)       #Deal with later
+    prev_t = mcdc["technique"]["hybrid"]["mesh"]["t"][current_t_idx-1]    
     while P["alive"] and P["t"]<current_t:  #Move Particles to end of current step
         hybrid_step_particle(P_arr, prog)
     if P["hybrid"]["birth_time"] < prev_t and P["alive"]:    #Particles that were around current step won't be relabeled and move on next step 
+        P["hybrid"]["p_scatter"] = 0    
         adapt.add_future(P_arr, mcdc)
         
 
@@ -381,7 +380,13 @@ def hybrid_step_particle(P_arr, prog):
 
     # The & operator here is a bitwise and.
     # It is used to determine if an event type is part of the particle event.
+    # Collision
+    if P["event"] & EVENT_COLLISION:            
+        hybrid_kernel.scattering(P_arr, prog)   
+      
 
+            
+                
     # Surface crossing
     if event & EVENT_SURFACE_CROSSING:
         hybrid_kernel.hybrid_surface_crossing(P_arr, prog)
@@ -472,7 +477,9 @@ def hybrid_particle_sweep(mcdc):
     # sweep particles
     hybrid_update_current_source(mcdc)
     hybrid_loop_source(mcdc)
-    kernel.allreduce_array(hybrid["uncollided_flux"])
+    kernel.allreduce_array(hybrid["SN"]["uncollided_flux"])
+    kernel.allreduce_array(hybrid["SN"]["flux_n_collisions"])
+
 
     
        
@@ -617,17 +624,16 @@ def solve_SN(Omega,i_ordinates,x,y,z,mcdc):
     sigmaT =  material["total"]+1/material["speed"]*dt_inv    
 
 
-    #tensor = ["tensor_x", "tensor_y", "tensor_z"] 
-    
+     
     signs = np.sign(Omega[0:-1]).astype(int)
-    effective_uncollided_flux = hybrid["SN"]["uncollided_flux"][:,x,y,z]
-    #effective_uncollided_flux = (sigmaT != 0) 
+    
+    effective_uncollided_flux = hybrid["SN"]["flux_n_collisions"][:,x,y,z]
+    
     effective_collided_flux = hybrid["SN"]["collided_flux"][:,:,:,:,x,y,z].copy()
     coef_loc = hybrid["SN"]["coef"][:,:,:,:,x,y,z,i_ordinates]
     coef_down_x, coef_down_y, coef_down_z = downstream_coef(x,y,z,i_ordinates,signs,mcdc)
     
-    #updown = int(Omega[idx]<0)
-    #tensor = hybrid["SN"][tensors[idx]][:,:,updown,:]
+ 
     tensor_x = hybrid["SN"]["tensor_x"][:,:,int(Omega[0]<0),:]
     tensor_y = hybrid["SN"]["tensor_y"][:,:,int(Omega[1]<0),:]
     tensor_z = hybrid["SN"]["tensor_z"][:,:,int(Omega[2]<0),:]    
@@ -644,8 +650,7 @@ def solve_SN(Omega,i_ordinates,x,y,z,mcdc):
     total_effective_flux = effective_collided_flux
     total_effective_flux[:,0,0,0] += effective_uncollided_flux
     RHS = np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,-1],tensor_y[:,:,-1],tensor_z[:,:,-1],total_effective_flux)    
-    #RHS[:,0,0,0] += effective_uncollided_flux
-    #RHS*=np.prod(dxyz)
+    
     RHS += Omega[0]  * np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,-2],tensor_y[:,:,-1],tensor_z[:,:,-1], coef_down_x)
     RHS += Omega[1]  * np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,-1],tensor_y[:,:,-2],tensor_z[:,:,-1], coef_down_y)
     RHS += Omega[2]  * np.einsum("ij,kl,mn,gjln->gikm", tensor_x[:,:,-1],tensor_y[:,:,-1],tensor_z[:,:,-2], coef_down_z)
@@ -737,6 +742,7 @@ def hybrid_relabel(mcdc):
     # sweep particles
     hybrid_loop_source(mcdc)
     hybrid["SN"]["uncollided_flux"].fill(0)
+    hybrid["SN"]["flux_n_collisions"].fill(0)
     
 # ===========================================================================
 # GMRES Linear operator
