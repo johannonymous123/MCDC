@@ -1026,8 +1026,8 @@ def get_particle(P_arr, bank, mcdc):
     if mcdc["technique"]["iQMC"]:
         P["iqmc"]["w"] = P_rec["iqmc"]["w"]
     if mcdc["technique"]["hybridMC"]:
-        P["hybrid"]["w"] = P_rec["hybrid"]["w"]    
-        P["hybrid"]["birth_time"] = P_rec["hybrid"]["birth_time"]  
+        P["w"] = P_rec["w"]
+        P["hybrid"]["birth_time"] = P_rec["hybrid"]["birth_time"]
         P["hybrid"]["p_scatter"] = P_rec["hybrid"]["p_scatter"]
 
     P["alive"] = True
@@ -1738,9 +1738,9 @@ def pct_splitting_roulette_weight(seed, mcdc):
 @njit
 def move_particle(P_arr, distance, mcdc):
     P = P_arr[0]
-    P["x"] += P["ux"] * distance 
-    P["y"] += P["uy"] * distance 
-    P["z"] += P["uz"] * distance 
+    P["x"] += P["ux"] * distance
+    P["y"] += P["uy"] * distance
+    P["z"] += P["uz"] * distance
     P["t"] += distance / physics.get_speed(P_arr, mcdc)
 
 
@@ -1760,7 +1760,7 @@ def copy_recordlike(P_new_arr, P_rec_arr):
     P_new["w"] = P_rec["w"]
     P_new["rng_seed"] = P_rec["rng_seed"]
     P_new["iqmc"]["w"] = P_rec["iqmc"]["w"]
-    P_new["hybrid"]["w"] = P_rec["hybrid"]["w"]
+    # P_new["hybrid"]["w"] = P_rec["hybrid"]["w"]
     P_new["hybrid"]["birth_time"] = P_rec["hybrid"]["birth_time"]
     P_new["hybrid"]["p_scatter"] = P_rec["hybrid"]["p_scatter"]
 
@@ -3624,7 +3624,7 @@ def weight_roulette(P_arr, mcdc):
         if mcdc["technique"]["iQMC"]:
             P["iqmc"]["w"][:] = w_survive
         if mcdc["technique"]["hybridMC"]:
-                P["hybrid"]["w"][:] = w_survive
+            P["hybrid"]["w"][:] = w_survive
     else:
         P["alive"] = False
 

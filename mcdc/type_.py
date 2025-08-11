@@ -226,7 +226,6 @@ def make_type_particle(input_deck):
     iQMC = input_deck.technique["iQMC"]
     hybridMC = input_deck.technique["hybridMC"]
 
-
     # =========================================================================
     # iQMC
     # =========================================================================
@@ -237,14 +236,15 @@ def make_type_particle(input_deck):
     # iQMC vector of weights
     if iQMC or hybridMC:
         G = input_deck.materials[0].G
-        
-    iqmc_struct = [("w", float64, (G,))]
-    hybrid_struct = [("w", float64, (G,)),
-                     ("birth_time",float64),
-                     ("p_scatter",uint64),
-                     ]
 
-    struct += [("hybrid", hybrid_struct)] 
+    iqmc_struct = [("w", float64, (G,))]
+    hybrid_struct = [
+        ("birth_time", float64),
+        ("p_scatter", uint64),
+        ("g_coarse", uint64),  # Coarse group index for hybridMC
+    ]
+
+    struct += [("hybrid", hybrid_struct)]
     struct += [("iqmc", iqmc_struct)]
 
     # Save type
@@ -273,7 +273,6 @@ def make_type_particle_record(input_deck):
     iQMC = input_deck.technique["iQMC"]
     hybridMC = input_deck.technique["hybridMC"]
 
-
     # =========================================================================
     # iQMC
     # =========================================================================
@@ -284,17 +283,17 @@ def make_type_particle_record(input_deck):
     # iQMC vector of weights
     if iQMC or hybridMC:
         G = input_deck.materials[0].G
+
     iqmc_struct = [("w", float64, (G,))]
     hybrid_struct = [
-                    ("w", float64, (G,)),
-                    ("birth_time",float64),
-                    ("p_scatter",uint64),
-                     ]
-    
+        ("birth_time", float64),
+        ("p_scatter", uint64),
+        ("g_coarse", uint64),
+    ]
+
     struct += [("hybrid", hybrid_struct)]
     struct += [("iqmc", iqmc_struct)]
-   
-    
+
     # Save type
     particle_record = into_dtype(struct)
 
@@ -523,6 +522,8 @@ def make_type_material(input_deck):
         ("nu_d", float64, (G, J)),
         ("chi_s", float64, (G, G)),
         ("chi_p", float64, (G, G)),
+        ("partner_ID", int64),  # ID of the partner material for hybridMC
+        ("partner", bool_),  # Whether this material is a partner
     ]
 
     # Set the type
@@ -1092,6 +1093,7 @@ hybrid_score_list = (
     "fission-source",
 )
 
+
 def make_type_technique(input_deck):
     global technique
 
@@ -1253,11 +1255,32 @@ def make_type_technique(input_deck):
     hybrid_list = []
     N_particle_hybrid = N_particle
     # Mesh (for qmc source tallies)
+    G_coarse = input_deck.materials[-1].G
     if card["hybridMC"]:
         mesh, Nx, Ny, Nz, Nt, Nmu, N_azi = make_type_mesh_(card["hybrid"]["mesh"])
         Ng = G
-    
+        Ng_coarse = G_coarse
         N_dim = 6  # group, x, y, z, mu, phi
+        mesh = into_dtype(
+            [
+                ("x", float64, (Nx + 1,)),
+                ("y", float64, (Ny + 1,)),
+                ("z", float64, (Nz + 1,)),
+                ("t", float64, (Nt + 1,)),
+                ("mu", float64, (Nmu + 1,)),
+                ("azi", float64, (N_azi + 1,)),
+                ("g", float64, (Ng + 1,)),
+                ("g_coarse", float64, (Ng_coarse + 1,)),
+                ("Nx", int64),
+                ("Ny", int64),
+                ("Nz", int64),
+                ("Nt", int64),
+                ("Nmu", int64),
+                ("N_azi", int64),
+                ("Ng_coarse", int64),
+                ("Ng", int64),
+            ]
+        )
     else:
         Nx = Ny = Nz = Nt = Nmu = N_azi = N_particle_hybrid = Ng = N_dim = 0
 
@@ -1269,10 +1292,10 @@ def make_type_technique(input_deck):
     # make global arrays
     hybrid_list += [("fixed_source", float64, (Ng, Nt, Nx, Ny, Nz))]
     hybrid_list += [("phi0", float64, (Ng, Nx, Ny, Nz))]
-    hybrid_list += [("boundary_x_pos", float64, (Ng, Nt,  Ny, Nz))]
-    hybrid_list += [("boundary_x_neg", float64, (Ng, Nt,  Ny, Nz))]
-    hybrid_list += [("boundary_y_pos", float64, (Ng, Nt, Nx,  Nz))]
-    hybrid_list += [("boundary_y_neg", float64, (Ng, Nt, Nx,  Nz))]
+    hybrid_list += [("boundary_x_pos", float64, (Ng, Nt, Ny, Nz))]
+    hybrid_list += [("boundary_x_neg", float64, (Ng, Nt, Ny, Nz))]
+    hybrid_list += [("boundary_y_pos", float64, (Ng, Nt, Nx, Nz))]
+    hybrid_list += [("boundary_y_neg", float64, (Ng, Nt, Nx, Nz))]
     hybrid_list += [("boundary_z_pos", float64, (Ng, Nt, Nx, Ny))]
     hybrid_list += [("boundary_z_neg", float64, (Ng, Nt, Nx, Ny))]
 
@@ -1280,13 +1303,8 @@ def make_type_technique(input_deck):
     hybrid_list += [("source", float64, (Ng, Nt, Nx, Ny, Nz))]
     total_size = (Ng * Nt * Nx * Ny * Nz) * card["hybrid"]["krylov_vector_size"]
     hybrid_list += [(("total_source"), float64, (total_size,))]
-    #hybrid_list += [("uncollided_flux", float64, (Ng,  Nx, Ny, Nz))]
-    #hybrid_list += [("flux_n_collision", float64, (Ng,  Nx, Ny, Nz))]
-    #hybrid_list += [("collided_flux", float64, (Ng,  Nx, Ny, Nz))]
 
     hybrid_list += [("time_step_idx", int64)]
-
-    
 
     # Make scores
     scores_shapes = [
@@ -1297,7 +1315,7 @@ def make_type_technique(input_deck):
         ["source-y", (Ng, Nt, Nx, Ny, Nz)],
         ["source-z", (Ng, Nt, Nx, Ny, Nz)],
         ["fission-power", (Ng, Nt, Nx, Ny, Nz)],  # SigmaF*phi
-        ["fission-source", (1,)],  # nu*SigmaF*phi
+        ["fission-source", (Ng, Nt, Nx, Ny, Nz)],  # nu*SigmaF*phi
     ]
 
     if card["hybridMC"]:
@@ -1340,39 +1358,51 @@ def make_type_technique(input_deck):
         ("mode", str_),
         ("n_scatter", int64),
     ]
-    n_directions = card["hybrid"]["SN"]["n_directions"]     
-    n_ordinates  = card["hybrid"]["SN"]["n_ordinates"]     
+    n_directions = card["hybrid"]["SN"]["n_directions"]
+    n_ordinates = card["hybrid"]["SN"]["n_ordinates"]
     if n_directions == n_ordinates:
         directions = 1
     if n_directions == n_ordinates**2:
         directions = 2
-    if n_directions == 2*n_ordinates**2:
+    if n_directions == 2 * n_ordinates**2:
         directions = 3
     x_deg = card["hybrid"]["SN"]["x_degree"]
     y_deg = card["hybrid"]["SN"]["y_degree"]
     z_deg = card["hybrid"]["SN"]["z_degree"]
-    
-    sn_list=[]
+
+    sn_list = []
     if card["hybridMC"]:
         sn_list = [("n_ordinates", int64)]
         sn_list += [("x_degree", int64)]
         sn_list += [("y_degree", int64)]
         sn_list += [("z_degree", int64)]
-        sn_list += [("coef", float64, (Ng,x_deg+1,y_deg+1,z_deg+1, Nx,Ny,Nz,n_directions))]        
+        sn_list += [
+            (
+                "coef",
+                float64,
+                (Ng_coarse, x_deg + 1, y_deg + 1, z_deg + 1, Nx, Ny, Nz, n_directions),
+            )
+        ]
         sn_list += [("n_directions", int64)]
-        sn_list += [("ordinates", float64, (get_work_size(n_directions),directions+1))]
-        sn_list += [("tensor_x", float64, (x_deg+1,x_deg+1,2,4))]
-        sn_list += [("tensor_y", float64, (y_deg+1,y_deg+1,2,4))]
-        sn_list += [("tensor_z", float64, (z_deg+1,z_deg+1,2,4))]
-        sn_list +=[("uncollided_flux", float64,(Ng,Nx,Ny,Nz))]
-        sn_list +=[("flux_n_collisions", float64,(Ng,Nx,Ny,Nz))]
-        sn_list +=[("collided_flux", float64,(Ng,x_deg+1,y_deg+1,z_deg+1,Nx,Ny,Nz))]
-       
+        sn_list += [
+            ("ordinates", float64, (get_work_size(n_directions), directions + 1))
+        ]
+        sn_list += [("tensor_x", float64, (x_deg + 1, x_deg + 1, 2, 4))]
+        sn_list += [("tensor_y", float64, (y_deg + 1, y_deg + 1, 2, 4))]
+        sn_list += [("tensor_z", float64, (z_deg + 1, z_deg + 1, 2, 4))]
+        sn_list += [("uncollided_flux", float64, (Ng, Nx, Ny, Nz))]
+        sn_list += [("flux_n_collisions", float64, (Ng, Nx, Ny, Nz))]
+        sn_list += [
+            (
+                "collided_flux",
+                float64,
+                (Ng_coarse, x_deg + 1, y_deg + 1, z_deg + 1, Nx, Ny, Nz),
+            )
+        ]
 
     sn = into_dtype(sn_list)
-    hybrid_list+=[("SN",sn)]
+    hybrid_list += [("SN", sn)]
     struct += [("hybrid", into_dtype(hybrid_list))]
-
 
     # =========================================================================
     # IC generator
@@ -1631,12 +1661,12 @@ def make_type_global(input_deck):
     # hybridMC bank adjustment
     if input_deck.technique["hybridMC"]:
         bank_source = particle_bank(N_work)
-        bank_future = particle_bank(1+N_work)
+        bank_future = particle_bank(1 + N_work)
 
         if input_deck.setting["mode_eigenvalue"]:
             bank_census = particle_bank(0)
             bank_future = particle_bank(0)
-    
+
     # Source and IC files bank adjustments
     if not input_deck.setting["mode_eigenvalue"]:
         if input_deck.setting["source_file"]:
@@ -1646,8 +1676,13 @@ def make_type_global(input_deck):
             bank_precursor = precursor_bank(N_precursor)
 
     if (
-        input_deck.setting["source_file"] and not input_deck.setting["mode_eigenvalue"]
-    ) or input_deck.technique["iQMC"] or input_deck.technique["hybridMC"]:
+        (
+            input_deck.setting["source_file"]
+            and not input_deck.setting["mode_eigenvalue"]
+        )
+        or input_deck.technique["iQMC"]
+        or input_deck.technique["hybridMC"]
+    ):
         bank_source = particle_bank(N_work)
 
     # GLobal type

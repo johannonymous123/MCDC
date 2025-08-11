@@ -66,9 +66,8 @@ def run():
 
     if input_deck.technique["iQMC"]:
         iqmc_validate_inputs(input_deck)
-    #if input_deck.technique["hybridMC"]:
-    #    hybrid_validate_inputs(input_deck)     
-
+    # if input_deck.technique["hybridMC"]:
+    #    hybrid_validate_inputs(input_deck)
 
     data_arr, mcdc_arr = prepare()
     data = data_arr[0]
@@ -77,8 +76,6 @@ def run():
 
     # Print banner, hardware configuration, and header
     print_banner(mcdc)
-
-
 
     print_msg(" Now running TNT...")
     if mcdc["setting"]["mode_eigenvalue"]:
@@ -1204,9 +1201,9 @@ def prepare():
                 mcdc["setting"]["time_boundary"]
                 > input_deck.technique["hybrid"]["mesh"]["t"][-1]
             ):
-                mcdc["setting"]["time_boundary"] = input_deck.technique["hybrid"]["mesh"][
-                    "t"
-                ][-1]
+                mcdc["setting"]["time_boundary"] = input_deck.technique["hybrid"][
+                    "mesh"
+                ]["t"][-1]
 
     # =========================================================================
     # Technique
@@ -1363,7 +1360,7 @@ def prepare():
             mcdc["technique"]["iqmc"]["score"][name]["bin"] = value
         # minimum particle weight
         iqmc["w_min"] = 1e-13
-        
+
     # =========================================================================
     # Hybrid Monte Carlo
     # =========================================================================
@@ -1381,21 +1378,27 @@ def prepare():
             "score",
             "SN",
         ]:
-            copy_field(mcdc["technique"]["hybrid"], input_deck.technique["hybrid"], name)
+            copy_field(
+                mcdc["technique"]["hybrid"], input_deck.technique["hybrid"], name
+            )
 
     if input_deck.technique["hybridMC"]:
         # pass in mesh
         hybrid = mcdc["technique"]["hybrid"]
-        for name in ["x", "y", "z", "t"]:
+        for name in ["x", "y", "z", "t", "g_coarse", "g"]:
             copy_field(hybrid["mesh"], input_deck.technique["hybrid"]["mesh"], name)
         Nx = len(input_deck.technique["hybrid"]["mesh"]["x"]) - 1
         Ny = len(input_deck.technique["hybrid"]["mesh"]["y"]) - 1
         Nz = len(input_deck.technique["hybrid"]["mesh"]["z"]) - 1
         Nt = len(input_deck.technique["hybrid"]["mesh"]["t"]) - 1
+        Ng_coarse = len(input_deck.technique["hybrid"]["mesh"]["g_coarse"]) - 1
+        Ng = len(input_deck.technique["hybrid"]["mesh"]["g"]) - 1
         hybrid["mesh"]["Nx"] = Nx
         hybrid["mesh"]["Ny"] = Ny
         hybrid["mesh"]["Nz"] = Nz
         hybrid["mesh"]["Nt"] = Nt
+        hybrid["mesh"]["Ng_coarse"] = Ng_coarse
+        hybrid["mesh"]["Ng"] = Ng
         # pass in score list
         for name, value in input_deck.technique["hybrid"]["score_list"].items():
             copy_field(
@@ -1405,10 +1408,10 @@ def prepare():
         for name, value in input_deck.technique["hybrid"]["score"].items():
             mcdc["technique"]["hybrid"]["score"][name]["bin"] = value
         # minimum particle weight
-        hybrid["w_min"] = 1e-13  
-        
+        hybrid["w_min"] = 1e-13
+
         for name, value in input_deck.technique["hybrid"]["SN"].items():
-            if name not in ["ordinates","tensor_x","tensor_y","tensor_z"]:
+            if name not in ["ordinates", "tensor_x", "tensor_y", "tensor_z"]:
                 mcdc["technique"]["hybrid"]["SN"][name] = value
     # =========================================================================
     # Variance Deconvolution - UQ
@@ -1968,7 +1971,7 @@ def generate_hdf5(data, mcdc):
 
             # Surface tallies
             for ID, tally in enumerate(mcdc["surface_tallies"]):
-                if mcdc["technique"]["iQMC"]or mcdc["technique"]["hybridMC"]:
+                if mcdc["technique"]["iQMC"] or mcdc["technique"]["hybridMC"]:
                     break
 
                 # Shape
@@ -2008,7 +2011,7 @@ def generate_hdf5(data, mcdc):
 
             # Cell tallies
             for ID, tally in enumerate(mcdc["cell_tallies"]):
-                if mcdc["technique"]["iQMC"]or mcdc["technique"]["hybridMC"]:
+                if mcdc["technique"]["iQMC"] or mcdc["technique"]["hybridMC"]:
                     break
 
                 mesh = tally["filter"]
@@ -2066,7 +2069,7 @@ def generate_hdf5(data, mcdc):
 
             # CS tallies
             for ID, tally in enumerate(mcdc["cs_tallies"]):
-                if mcdc["technique"]["iQMC"]or mcdc["technique"]["hybridMC"]:
+                if mcdc["technique"]["iQMC"] or mcdc["technique"]["hybridMC"]:
                     break
                 N_cs_bins = tally["filter"]["N_cs_bins"]
 
@@ -2134,7 +2137,7 @@ def generate_hdf5(data, mcdc):
                         N_cycle = mcdc["setting"]["N_cycle"]
                         f.create_dataset("k_cycle", data=mcdc["k_cycle"][:N_cycle])
                         f.create_dataset("k_mean", data=mcdc["k_avg_running"])
-                        f.create_dataset("k_sdev", data=mcdc["k_sdv_running"])        
+                        f.create_dataset("k_sdev", data=mcdc["k_sdv_running"])
                 else:
                     N_cycle = mcdc["setting"]["N_cycle"]
                     f.create_dataset("k_cycle", data=mcdc["k_cycle"][:N_cycle])
@@ -2225,8 +2228,7 @@ def generate_hdf5(data, mcdc):
                     "hybrid/iteration_count", data=T["hybrid"]["iteration_count"]
                 )
                 f.create_dataset("hybrid/sweep_count", data=T["hybrid"]["sweep_count"])
-                f.create_dataset("hybrid/final_residual", data=T["hybrid"]["residual"])    
-
+                f.create_dataset("hybrid/final_residual", data=T["hybrid"]["residual"])
 
             # IC generator
             if mcdc["technique"]["IC_generator"]:

@@ -44,6 +44,345 @@ from mcdc.print_ import print_error
 import mcdc.type_ as type_
 
 
+def material(
+    nuclides=None,
+    capture=None,
+    scatter=None,
+    fission=None,
+    nu_s=None,
+    nu_p=None,
+    nu_d=None,
+    chi_p=None,
+    chi_d=None,
+    speed=None,
+    decay=None,
+    partner=None,
+):
+    """
+    Create a material
+
+    A material is defined either as a collection of nuclides or directly by its
+    macroscopic constants.
+
+    Parameters
+    ----------
+    nuclides : list of tuple of (dictionary, float), optional
+        List of pairs of nuclide card and its density [/barn-cm].
+    capture : numpy.ndarray (1D), optional
+        Capture macroscopic cross-section [/cm].
+    scatter : numpy.ndarray (2D), optional
+        Differential scattering macroscopic cross-section [gout, gin] [/cm].
+    fission : numpy.ndarray (1D), optional
+        Fission macroscopic cross-section [/cm].
+    nu_s : numpy.ndarray (1D), optional
+        Scattering multiplication.
+    nu_p : numpy.ndarray (1D), optional
+        Prompt fission neutron yield.
+    nu_d : numpy.ndarray (2D), optional
+        Delayed neutron precursor yield [dg, gin].
+    chi_p : numpy.ndarray (2D), optional
+        Prompt fission spectrum [gout, gin].
+    chi_d : numpy.ndarray (2D), optional
+        Delayed neutron spectrum [gout, dg].
+    speed : numpy.ndarray (1D), optional
+        Energy group speed [cm/s].
+    decay : numpy.ndarray (1D), optional
+        Precursor group decay constant [/s].
+
+    Returns
+    -------
+    MaterialCard
+        The material
+
+    See also
+    --------
+    mcdc.nuclide : A material can be defined as a collection of nuclides.
+    """
+    # If nuclides are not given, and macroscopic constants are given instead,
+    # create a nuclide card and set a single-nuclide material
+    if nuclides is None:
+        card_nuclide = nuclide(
+            capture,
+            scatter,
+            fission,
+            nu_s,
+            nu_p,
+            nu_d,
+            chi_p,
+            chi_d,
+            speed,
+            decay,
+        )
+        nuclides = [[card_nuclide, 1.0]]
+
+    # Number of nuclides
+    N_nuclide = len(nuclides)
+
+    # Continuous energy mode?
+    if isinstance(nuclides[0][0], str):
+        global_.input_deck.setting["mode_CE"] = True
+        global_.input_deck.setting["mode_MG"] = False
+
+        # Make material card
+        card = MaterialCard(N_nuclide)
+
+        # Set ID
+        card.ID = len(global_.input_deck.materials)
+        if partner is not None:
+            partner.partner_ID = card.ID
+            partner.partner = True
+
+        # Default values
+        card.J = 6
+
+        # Set the nuclides
+        for i in range(N_nuclide):
+            nuc_name = nuclides[i][0]
+            density = nuclides[i][1]
+
+            # Create nuclide card if not defined yet
+            if not nuclide_registered(nuc_name):
+                nuc_card = NuclideCard()
+                nuc_card.name = nuc_name
+
+                # Set ID
+                nuc_card.ID = len(global_.input_deck.nuclides)
+
+                # Default values
+                nuc_card.J = 6
+
+                # Check if the nuclide is available in the nuclear data library
+                dir_name = os.getenv("MCDC_XSLIB")
+                if dir_name == None:
+                    print_error(
+                        "Continuous energy data directory not configured \n       "
+                        "see https://cement-psaapgithubio.readthedocs.io/en/latest"
+                        "/install.html#configuring-continuous-energy-library \n"
+                    )
+
+                # Fissionable flag
+                lib_file_name = dir_name + "/" + nuc_name + ".h5"
+                if not Path(lib_file_name).is_file():
+                    print_error(f"Nuclide data not found: {nuc_name}")
+                with h5py.File(lib_file_name, "r") as f:
+                    if max(f["fission"][:]) > 0.0:
+                        nuc_card.fissionable = True
+                        card.fissionable = True
+
+                # Add to deck
+                global_.input_deck.nuclides.append(nuc_card)
+            else:
+                nuc_card = get_nuclide(nuc_name)
+
+            card.nuclide_IDs[i] = nuc_card.ID
+            card.nuclide_densities[i] = density
+
+        # Check if there is a material with identical composition already
+        if global_.input_deck.setting["mode_CE"]:
+            for card_registered in global_.input_deck.materials:
+                identical = True
+                for i in range(len(card_registered.nuclide_IDs)):
+                    if not card_registered.nuclide_IDs[i] == card.nuclide_IDs[i]:
+                        identical = False
+                        break
+                    if (
+                        not card_registered.nuclide_densities[i]
+                        == card.nuclide_densities[i]
+                    ):
+                        identical = False
+                        break
+
+                if identical:
+                    return card_registered
+
+        # Add to deck
+        global_.input_deck.materials.append(card)
+        return card
+
+    # Nuclide and group sizes
+    G = nuclides[0][0].G
+    J = nuclides[0][0].J
+
+    # Make material card
+    card = MaterialCard(N_nuclide, G, J)
+
+    # Set ID
+    card.ID = len(global_.input_deck.materials)
+
+    # Calculate basic XS
+    for i in range(N_nuclide):
+        nuc = nuclides[i][0]
+        density = nuclides[i][1]
+        card.nuclide_IDs[i] = nuc.ID
+        card.nuclide_densities[i] = density
+
+        card.capture += nuc.capture * density
+        card.scatter += nuc.scatter * density
+        card.fission += nuc.fission * density
+        card.total += nuc.total * density
+
+    # Calculate effective speed
+    # Current approach: weighted by nuclide macroscopic total cross section
+    # TODO: other more appropriate way?
+    for i in range(N_nuclide):
+        nuc = nuclides[i][0]
+        density = nuclides[i][1]
+        card.speed += nuc.speed * nuc.total * density
+    # If vacuum material, just pick the last nuclide
+    if max(card.total) == 0.0:
+        card.speed[:] = nuc.speed
+    else:
+        card.speed /= card.total
+
+    # Calculate effective spectra and multiplicities of scattering and prompt fission
+    if max(card.scatter) > 0.0:
+        nuSigmaS = np.zeros((G, G), dtype=float)
+        for i in range(N_nuclide):
+            nuc = nuclides[i][0]
+            density = nuclides[i][1]
+            SigmaS = np.diag(nuc.scatter) * density
+            nu_s = np.diag(nuc.nu_s)
+            chi_s = np.transpose(nuc.chi_s)
+            nuSigmaS += chi_s.dot(nu_s.dot(SigmaS))
+        chi_nu_s = nuSigmaS.dot(np.diag(1.0 / card.scatter))
+        card.nu_s = np.sum(chi_nu_s, axis=0)
+        card.chi_s = np.transpose(chi_nu_s.dot(np.diag(1.0 / card.nu_s)))
+    if max(card.fission) > 0.0:
+        nuSigmaF = np.zeros((G, G), dtype=float)
+        for i in range(N_nuclide):
+            nuc = nuclides[i][0]
+            density = nuclides[i][1]
+            SigmaF = np.diag(nuc.fission) * density
+            nu_p = np.diag(nuc.nu_p)
+            chi_p = np.transpose(nuc.chi_p)
+            nuSigmaF += chi_p.dot(nu_p.dot(SigmaF))
+        chi_nu_p = nuSigmaF.dot(np.diag(1.0 / card.fission))
+        card.nu_p = np.sum(chi_nu_p, axis=0)
+        card.chi_p = np.transpose(chi_nu_p.dot(np.diag(1.0 / card.nu_p)))
+
+    # Calculate delayed and total fission multiplicities
+    if max(card.fission) > 0.0:
+        card.nu_f[:] = card.nu_p[:]
+        for j in range(J):
+            total = np.zeros(G)
+            for i in range(N_nuclide):
+                nuc = nuclides[i][0]
+                density = nuclides[i][1]
+                total += nuc.nu_d[:, j] * nuc.fission * density
+            card.nu_d[:, j] = total / card.fission
+            card.nu_f += card.nu_d[:, j]
+
+    # Padding logic at the end if partner is provided
+    if partner is not None:
+        # Set partner_ID for reference
+        card.partner_ID = partner.ID
+        partner.partner_ID = card.ID
+        # Pad the last nuclide card to match the partner nuclide
+        if hasattr(partner, "ID") and len(global_.input_deck.nuclides) > 0:
+            pad_nuclide_card(global_.input_deck.nuclides[-1], partner_ID=partner.ID)
+        # Pad material card attributes to match partner's shapes
+        attrs = [
+            "capture",
+            "fission",
+            "nu_s",
+            "nu_p",
+            "nu_f",
+            "chi_s",
+            "speed",
+            "scatter",
+            "chi_p",
+            "decay",
+            "nu_d",
+            "chi_d",
+            "total",
+            "nuclide_IDs",
+            "nuclide_densities",
+        ]
+        for attr in attrs:
+            arr = getattr(card, attr, None)
+            partner_arr = getattr(partner, attr, None)
+            if (
+                arr is not None
+                and partner_arr is not None
+                and hasattr(arr, "shape")
+                and arr.shape != partner_arr.shape
+            ):
+                padded = np.zeros(partner_arr.shape, dtype=arr.dtype)
+                slices = tuple(
+                    slice(0, min(s, arr.shape[i]))
+                    for i, s in enumerate(partner_arr.shape)
+                )
+                padded[slices] = arr[slices]
+                setattr(card, attr, padded)
+        card.partner = True
+        partner.partner = True
+    else:
+        card.partner_ID = card.ID
+        card.partner = False
+    global_.input_deck.materials.append(card)
+    return card
+
+
+# Utility function to pad nuclide card arrays
+def pad_nuclide_card(card, partner_ID=None):
+    """
+    Pad the arrays in a nuclide card to match the shape of a partner nuclide card.
+
+    Parameters
+    ----------
+    card : NuclideCard
+        The nuclide card to pad.
+    partner_ID : int, optional
+        The ID of the partner nuclide card to match shapes with.
+    """
+    if partner_ID is None:
+        return
+    nuclides = getattr(global_, "input_deck", None)
+    if nuclides is None or not hasattr(global_.input_deck, "nuclides"):
+        return
+    partner_list = global_.input_deck.nuclides
+    if not (0 <= partner_ID < len(partner_list)):
+        return
+    partner = partner_list[partner_ID]
+
+    def pad(arr, shape):
+        if arr is None:
+            return None
+        arr = np.asarray(arr)
+        if arr.shape == shape:
+            return arr
+        padded = np.zeros(shape, dtype=arr.dtype)
+        slices = tuple(slice(0, min(s, arr.shape[i])) for i, s in enumerate(shape))
+        padded[slices] = arr[slices]
+        return padded
+
+    # List of relevant attributes to pad
+    attrs = [
+        "capture",
+        "fission",
+        "nu_s",
+        "nu_p",
+        "nu_f",
+        "chi_s",
+        "speed",
+        "scatter",
+        "chi_p",
+        "decay",
+        "nu_d",
+        "chi_d",
+        "total",
+    ]
+    for attr in attrs:
+        arr = getattr(card, attr, None)
+        partner_arr = getattr(partner, attr, None)
+        if (
+            arr is not None
+            and partner_arr is not None
+            and arr.shape != partner_arr.shape
+        ):
+            setattr(card, attr, pad(arr, partner_arr.shape))
+
+
 def nuclide(
     capture=None,
     scatter=None,
@@ -210,236 +549,6 @@ def nuclide(
     return card
 
 
-def material(
-    nuclides=None,
-    capture=None,
-    scatter=None,
-    fission=None,
-    nu_s=None,
-    nu_p=None,
-    nu_d=None,
-    chi_p=None,
-    chi_d=None,
-    speed=None,
-    decay=None,
-):
-    """
-    Create a material
-
-    A material is defined either as a collection of nuclides or directly by its
-    macroscopic constants.
-
-    Parameters
-    ----------
-    nuclides : list of tuple of (dictionary, float), optional
-        List of pairs of nuclide card and its density [/barn-cm].
-    capture : numpy.ndarray (1D), optional
-        Capture macroscopic cross-section [/cm].
-    scatter : numpy.ndarray (2D), optional
-        Differential scattering macroscopic cross-section [gout, gin] [/cm].
-    fission : numpy.ndarray (1D), optional
-        Fission macroscopic cross-section [/cm].
-    nu_s : numpy.ndarray (1D), optional
-        Scattering multiplication.
-    nu_p : numpy.ndarray (1D), optional
-        Prompt fission neutron yield.
-    nu_d : numpy.ndarray (2D), optional
-        Delayed neutron precursor yield [dg, gin].
-    chi_p : numpy.ndarray (2D), optional
-        Prompt fission spectrum [gout, gin].
-    chi_d : numpy.ndarray (2D), optional
-        Delayed neutron spectrum [gout, dg].
-    speed : numpy.ndarray (1D), optional
-        Energy group speed [cm/s].
-    decay : numpy.ndarray (1D), optional
-        Precursor group decay constant [/s].
-
-    Returns
-    -------
-    MaterialCard
-        The material
-
-    See also
-    --------
-    mcdc.nuclide : A material can be defined as a collection of nuclides.
-    """
-    # If nuclides are not given, and macroscopic constants are given instead,
-    # create a nuclide card and set a single-nuclide material
-    if nuclides is None:
-        card_nuclide = nuclide(
-            capture,
-            scatter,
-            fission,
-            nu_s,
-            nu_p,
-            nu_d,
-            chi_p,
-            chi_d,
-            speed,
-            decay,
-        )
-        nuclides = [[card_nuclide, 1.0]]
-
-    # Number of nuclides
-    N_nuclide = len(nuclides)
-
-    # Continuous energy mode?
-    if isinstance(nuclides[0][0], str):
-        global_.input_deck.setting["mode_CE"] = True
-        global_.input_deck.setting["mode_MG"] = False
-
-        # Make material card
-        card = MaterialCard(N_nuclide)
-
-        # Set ID
-        card.ID = len(global_.input_deck.materials)
-
-        # Default values
-        card.J = 6
-
-        # Set the nuclides
-        for i in range(N_nuclide):
-            nuc_name = nuclides[i][0]
-            density = nuclides[i][1]
-
-            # Create nuclide card if not defined yet
-            if not nuclide_registered(nuc_name):
-                nuc_card = NuclideCard()
-                nuc_card.name = nuc_name
-
-                # Set ID
-                nuc_card.ID = len(global_.input_deck.nuclides)
-
-                # Default values
-                nuc_card.J = 6
-
-                # Check if the nuclide is available in the nuclear data library
-                dir_name = os.getenv("MCDC_XSLIB")
-                if dir_name == None:
-                    print_error(
-                        "Continuous energy data directory not configured \n       "
-                        "see https://cement-psaapgithubio.readthedocs.io/en/latest"
-                        "/install.html#configuring-continuous-energy-library \n"
-                    )
-
-                # Fissionable flag
-                lib_file_name = dir_name + "/" + nuc_name + ".h5"
-                if not Path(lib_file_name).is_file():
-                    print_error(f"Nuclide data not found: {nuc_name}")
-                with h5py.File(lib_file_name, "r") as f:
-                    if max(f["fission"][:]) > 0.0:
-                        nuc_card.fissionable = True
-                        card.fissionable = True
-
-                # Add to deck
-                global_.input_deck.nuclides.append(nuc_card)
-            else:
-                nuc_card = get_nuclide(nuc_name)
-
-            card.nuclide_IDs[i] = nuc_card.ID
-            card.nuclide_densities[i] = density
-
-        # Check if there is a material with identical composition already
-        if global_.input_deck.setting["mode_CE"]:
-            for card_registered in global_.input_deck.materials:
-                identical = True
-                for i in range(len(card_registered.nuclide_IDs)):
-                    if not card_registered.nuclide_IDs[i] == card.nuclide_IDs[i]:
-                        identical = False
-                        break
-                    if (
-                        not card_registered.nuclide_densities[i]
-                        == card.nuclide_densities[i]
-                    ):
-                        identical = False
-                        break
-
-                if identical:
-                    return card_registered
-
-        # Add to deck
-        global_.input_deck.materials.append(card)
-        return card
-
-    # Nuclide and group sizes
-    G = nuclides[0][0].G
-    J = nuclides[0][0].J
-
-    # Make material card
-    card = MaterialCard(N_nuclide, G, J)
-
-    # Set ID
-    card.ID = len(global_.input_deck.materials)
-
-    # Calculate basic XS
-    for i in range(N_nuclide):
-        nuc = nuclides[i][0]
-        density = nuclides[i][1]
-        card.nuclide_IDs[i] = nuc.ID
-        card.nuclide_densities[i] = density
-
-        card.capture += nuc.capture * density
-        card.scatter += nuc.scatter * density
-        card.fission += nuc.fission * density
-        card.total += nuc.total * density
-
-    # Calculate effective speed
-    # Current approach: weighted by nuclide macroscopic total cross section
-    # TODO: other more appropriate way?
-    for i in range(N_nuclide):
-        nuc = nuclides[i][0]
-        density = nuclides[i][1]
-        card.speed += nuc.speed * nuc.total * density
-    # If vacuum material, just pick the last nuclide
-    if max(card.total) == 0.0:
-        card.speed[:] = nuc.speed
-    else:
-        card.speed /= card.total
-
-    # Calculate effective spectra and multiplicities of scattering and prompt fission
-    if max(card.scatter) > 0.0:
-        nuSigmaS = np.zeros((G, G), dtype=float)
-        for i in range(N_nuclide):
-            nuc = nuclides[i][0]
-            density = nuclides[i][1]
-            SigmaS = np.diag(nuc.scatter) * density
-            nu_s = np.diag(nuc.nu_s)
-            chi_s = np.transpose(nuc.chi_s)
-            nuSigmaS += chi_s.dot(nu_s.dot(SigmaS))
-        chi_nu_s = nuSigmaS.dot(np.diag(1.0 / card.scatter))
-        card.nu_s = np.sum(chi_nu_s, axis=0)
-        card.chi_s = np.transpose(chi_nu_s.dot(np.diag(1.0 / card.nu_s)))
-    if max(card.fission) > 0.0:
-        nuSigmaF = np.zeros((G, G), dtype=float)
-        for i in range(N_nuclide):
-            nuc = nuclides[i][0]
-            density = nuclides[i][1]
-            SigmaF = np.diag(nuc.fission) * density
-            nu_p = np.diag(nuc.nu_p)
-            chi_p = np.transpose(nuc.chi_p)
-            nuSigmaF += chi_p.dot(nu_p.dot(SigmaF))
-        chi_nu_p = nuSigmaF.dot(np.diag(1.0 / card.fission))
-        card.nu_p = np.sum(chi_nu_p, axis=0)
-        card.chi_p = np.transpose(chi_nu_p.dot(np.diag(1.0 / card.nu_p)))
-
-    # Calculate delayed and total fission multiplicities
-    if max(card.fission) > 0.0:
-        card.nu_f[:] = card.nu_p[:]
-        for j in range(J):
-            total = np.zeros(G)
-            for i in range(N_nuclide):
-                nuc = nuclides[i][0]
-                density = nuclides[i][1]
-                total += nuc.nu_d[:, j] * nuc.fission * density
-            card.nu_d[:, j] = total / card.fission
-            card.nu_f += card.nu_d[:, j]
-
-    # Add to deck
-    global_.input_deck.materials.append(card)
-
-    return card
-
-
 def surface(type_, bc="interface", **kw):
     """
     Create a surface to define the region of a cell.
@@ -481,7 +590,6 @@ def surface(type_, bc="interface", **kw):
     """
     # Make surface card
     card = SurfaceCard()
-    
 
     # Set ID
     card.ID = len(global_.input_deck.surfaces)
@@ -649,7 +757,7 @@ def cell(region=None, fill=None, translation=(0.0, 0.0, 0.0), rotation=(0.0, 0.0
 
     # Make cell card
     card = CellCard()
-    
+
     # Set ID
     card.ID = len(global_.input_deck.cells)
 
@@ -1549,8 +1657,9 @@ def iQMC(
 
 
 def hybridMC(
-    phi0=None,    
+    phi0=None,
     g=None,
+    g_coarse=None,
     t=None,
     x=None,
     y=None,
@@ -1567,17 +1676,17 @@ def hybridMC(
     boundary_z_neg=None,
     krylov_restart=None,
     fixed_source=None,
-    x_degree = -1,
-    y_degree = -1,
-    z_degree = -1,
-    n_ordinates = 4,
+    x_degree=-1,
+    y_degree=-1,
+    z_degree=-1,
+    n_ordinates=4,
     maxit=25,
     tol=1e-6,
     fixed_source_solver="source iteration",
     sample_method="halton",
     mode="fixed",
     scores=[],
-    n_scatter = None
+    n_scatter=None,
 ):
     """
     Activate the iterative Quasi-Monte Carlo (hybridMC) neutron transport method.
@@ -1645,38 +1754,41 @@ def hybridMC(
     card["hybrid"]["iterations_max"] = maxit
     card["hybrid"]["sample_method"] = sample_method
     card["hybrid"]["mode"] = mode
-    card["hybrid"]["SN"]["n_ordinates"] = n_ordinates 
+    card["hybrid"]["SN"]["n_ordinates"] = n_ordinates
     # Set mesh
     dim = 0
     if g is not None:
         card["hybrid"]["mesh"]["g"] = g
+        if g_coarse is not None:
+            card["hybrid"]["mesh"]["g_coarse"] = g_coarse
+        else:
+            card["hybrid"]["mesh"]["g_coarse"] = g
     if t is not None:
         card["hybrid"]["mesh"]["t"] = t
         card["hybrid"]["time_step_idx"] = 0
     if x is not None:
         card["hybrid"]["mesh"]["x"] = x
-        dim+=1
+        dim += 1
     if y is not None:
         card["hybrid"]["mesh"]["y"] = y
-        dim+=1
+        dim += 1
     if z is not None:
         card["hybrid"]["mesh"]["z"] = z
-        dim+=1
-    if x_degree !=- 1:
+        dim += 1
+    if x_degree != -1:
         card["hybrid"]["SN"]["x_degree"] = x_degree
-    if y_degree !=- 1:
+    if y_degree != -1:
         card["hybrid"]["SN"]["y_degree"] = y_degree
     if z_degree != -1:
-        card["hybrid"]["SN"]["z_degree"] = z_degree    
-    
-        
-    if dim ==1:
-        card["hybrid"]["SN"]["n_directions"] = n_ordinates 
+        card["hybrid"]["SN"]["z_degree"] = z_degree
+
+    if dim == 1:
+        card["hybrid"]["SN"]["n_directions"] = n_ordinates
     if dim == 2:
         card["hybrid"]["SN"]["n_directions"] = n_ordinates**2
     if dim == 3:
-        card["hybrid"]["SN"]["n_directions"] = 2*n_ordinates**2
-        
+        card["hybrid"]["SN"]["n_directions"] = 2 * n_ordinates**2
+
     ax_expand = []
     phi0_expand = []
     bdry_x_expand = []
@@ -1708,43 +1820,38 @@ def hybridMC(
         phi0_expand.append(3)
         bdry_x_expand.append(3)
         bdry_y_expand.append(3)
-    for ax in ax_expand:        
+    for ax in ax_expand:
         fixed_source = np.expand_dims(fixed_source, axis=ax)
-        
-        
-        
+
     if phi0 is not None and t is not None:
-        for ax in phi0_expand:        
+        for ax in phi0_expand:
             phi0 = np.expand_dims(phi0, axis=ax)
         card["hybrid"]["phi0"] = phi0
     if boundary_x_pos is not None and x is not None:
-        for ax in bdry_x_expand:        
-            boundary_x_pos = np.expand_dims(boundary_x_pos, axis=ax)        
-        card["hybrid"]["boundary_x_pos"] =  boundary_x_pos        
+        for ax in bdry_x_expand:
+            boundary_x_pos = np.expand_dims(boundary_x_pos, axis=ax)
+        card["hybrid"]["boundary_x_pos"] = boundary_x_pos
     if boundary_x_neg is not None and x is not None:
-        for ax in bdry_x_expand:        
-            boundary_x_neg = np.expand_dims(boundary_x_neg, axis=ax)        
-        card["hybrid"]["boundary_x_neg"] =  boundary_x_neg        
+        for ax in bdry_x_expand:
+            boundary_x_neg = np.expand_dims(boundary_x_neg, axis=ax)
+        card["hybrid"]["boundary_x_neg"] = boundary_x_neg
     if boundary_y_pos is not None and y is not None:
-        for ax in bdry_y_expand:        
-            boundary_y_pos = np.expand_dims(boundary_y_pos, axis=ax)        
-        card["hybrid"]["boundary_y_pos"] =  boundary_y_pos        
+        for ax in bdry_y_expand:
+            boundary_y_pos = np.expand_dims(boundary_y_pos, axis=ax)
+        card["hybrid"]["boundary_y_pos"] = boundary_y_pos
     if boundary_y_neg is not None and y is not None:
-        for ax in bdry_y_expand:        
-            boundary_y_neg = np.expand_dims(boundary_y_neg, axis=ax)        
-        card["hybrid"]["boundary_y_neg"] =  boundary_y_neg        
+        for ax in bdry_y_expand:
+            boundary_y_neg = np.expand_dims(boundary_y_neg, axis=ax)
+        card["hybrid"]["boundary_y_neg"] = boundary_y_neg
     if boundary_z_pos is not None and z is not None:
-        for ax in bdry_z_expand:        
-            boundary_z_pos = np.expand_dims(boundary_z_pos, axis=ax)        
-        card["hybrid"]["boundary_z_pos"] =  boundary_z_pos        
+        for ax in bdry_z_expand:
+            boundary_z_pos = np.expand_dims(boundary_z_pos, axis=ax)
+        card["hybrid"]["boundary_z_pos"] = boundary_z_pos
     if boundary_z_neg is not None and z is not None:
-        for ax in bdry_z_expand:        
-            boundary_z_neg = np.expand_dims(boundary_z_neg, axis=ax)        
-        card["hybrid"]["boundary_z_neg"] =  boundary_z_neg        
+        for ax in bdry_z_expand:
+            boundary_z_neg = np.expand_dims(boundary_z_neg, axis=ax)
+        card["hybrid"]["boundary_z_neg"] = boundary_z_neg
 
-    
-    
-    
     if krylov_restart is None:
         krylov_restart = maxit
 
@@ -1780,6 +1887,7 @@ def hybridMC(
     card["hybrid"]["krylov_restart"] = krylov_restart
     if n_scatter is not None:
         card["hybrid"]["n_scatter"] = n_scatter
+
 
 def weight_roulette(w_threshold=0.2, w_survive=1.0):
     """
@@ -2042,10 +2150,9 @@ def make_particle_bank(size):
         ("rng_seed", np.uint64),
     ]
     iqmc_struct = [("w", np.float64, (1,))]
-    hybrid_struct = [("w", np.float64, (1,)),
-                     ("birth_time", np.float64)]
-    
-    struct += [("iqmc", iqmc_struct)]    
+    hybrid_struct = [("w", np.float64, (1,)), ("birth_time", np.float64)]
+
+    struct += [("iqmc", iqmc_struct)]
     struct += [("hybrid", hybrid_struct)]
     bank = np.zeros(size, dtype=np.dtype(struct))
 
