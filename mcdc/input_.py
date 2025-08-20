@@ -1676,6 +1676,7 @@ def hybridMC(
     boundary_z_neg=None,
     krylov_restart=None,
     fixed_source=None,
+    pt_source_total=0,
     x_degree=-1,
     y_degree=-1,
     z_degree=-1,
@@ -1887,6 +1888,9 @@ def hybridMC(
     card["hybrid"]["krylov_restart"] = krylov_restart
     if n_scatter is not None:
         card["hybrid"]["n_scatter"] = n_scatter
+
+    if pt_source_total is not None:
+        card["hybrid"]["pt_source_total"] = pt_source_total
 
 
 def weight_roulette(w_threshold=0.2, w_survive=1.0):

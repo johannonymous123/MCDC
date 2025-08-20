@@ -365,8 +365,11 @@ def hybrid_loop_particle(P_arr, prog):
     while P["alive"] and P["t"] < current_t:  # Move Particles to end of current step
         hybrid_step_particle(P_arr, prog)
     if (
-        P["hybrid"]["birth_time"] < prev_t and P["alive"]
-    ):  # Particles that were around current step won't be relabeled and move on next step
+        P["hybrid"]["birth_time"] < prev_t
+        or mcdc["technique"]["hybrid"]["n_scatter"] >= INF
+    ) and P[
+        "alive"
+    ]:  # Particles that were around current step won't be relabeled and move on next step
         P["hybrid"]["p_scatter"] = 0
         adapt.add_future(P_arr, mcdc)
 
@@ -461,13 +464,17 @@ def hybrid_sweep(mcdc):
 def hybrid_time_step(mcdc):
     n_particles = mcdc["setting"]["N_particle"]
     n_directions = mcdc["technique"]["hybrid"]["SN"]["ordinates"].shape[0]
+    current_time_idx = mcdc["technique"]["hybrid"]["time_step_idx"]
+    n_scatter = mcdc["technique"]["hybrid"]["n_scatter"]
+    print(f"\n Time step {current_time_idx} \n")
     print("MC: \n")
     hybrid_particle_sweep(mcdc)
-    kernel.distribute_work(n_directions, mcdc)
-    hybrid_SN_sweep(mcdc)
-    kernel.distribute_work(n_particles, mcdc)
-    print("Relabeling: \n")
-    hybrid_relabel(mcdc)
+    if n_scatter < INF:
+        kernel.distribute_work(n_directions, mcdc)
+        hybrid_SN_sweep(mcdc)
+        kernel.distribute_work(n_particles, mcdc)
+        print("Relabeling: \n")
+        hybrid_relabel(mcdc)
 
 
 @njit

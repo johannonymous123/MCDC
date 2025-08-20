@@ -3623,8 +3623,8 @@ def weight_roulette(P_arr, mcdc):
         P["w"] = w_survive
         if mcdc["technique"]["iQMC"]:
             P["iqmc"]["w"][:] = w_survive
-        if mcdc["technique"]["hybridMC"]:
-            P["hybrid"]["w"][:] = w_survive
+        # if mcdc["technique"]["hybridMC"]:
+        #    P["hybrid"]["w"][:] = w_survive
     else:
         P["alive"] = False
 

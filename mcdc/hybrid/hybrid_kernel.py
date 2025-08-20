@@ -256,14 +256,19 @@ def hybrid_prepare_source(mcdc):
 def hybrid_prepare_particles(mcdc):
     # number of particles this processor will handle
     N_work = mcdc["mpi_work_size"]
-    N_Q, N_I, N_B = distribute_particles(N_work, mcdc)
-    hybrid_prepare_domain_particles(N_Q, mcdc)
-    hybrid_prepare_init_particles(N_Q, N_Q + N_I, mcdc)
-    N_start = N_Q + N_I
+    N_Q, N_I, N_B, N_P = distribute_particles(N_work, mcdc)
+    if N_Q > 0:
+        hybrid_prepare_domain_particles(N_Q, mcdc)
+    if N_I > 0:
+        hybrid_prepare_init_particles(N_Q, N_Q + N_I, mcdc)
+    if N_P > 0:
+        hybrid_prepare_point_particles(N_Q + N_I, N_Q + N_I + N_P, mcdc)
+        N_start = N_Q + N_I + N_P
     for i in range(6):
-        N_end = N_start + N_B[i]
-        hybrid_prepare_boundary_particles(N_start, N_end, i, mcdc)
-        N_start = N_end
+        if N_B[i] > 0:
+            N_end = N_start + N_B[i]
+            hybrid_prepare_boundary_particles(N_start, N_end, i, mcdc)
+            N_start = N_end
 
 
 @toggle("hybridMC")
@@ -291,7 +296,7 @@ def hybrid_prepare_domain_particles(N_Q, mcdc):
     Nt = mesh["Nt"]
     Ng = mesh["Ng"]
     # total number of spatial cells
-    N_total = Nx * Ny * Nz * Ng
+    N_total = Nt * Nx * Ny * Nz * Ng
     # outter mesh boundaries for sampling position
     xa = mesh["x"][0]
     xb = mesh["x"][-1]
@@ -339,7 +344,94 @@ def hybrid_prepare_domain_particles(N_Q, mcdc):
         P_new["hybrid"]["p_scatter"] = 0
 
         # add to source bank
-        adapt.add_future(P_new_arr, mcdc)
+        if P_new["w"] > 0:
+            adapt.add_future(P_new_arr, mcdc)
+
+
+@toggle("hybridMC")
+def hybrid_prepare_point_particles(N_start, N_end, mcdc):
+    """
+    Create N_particles assigning the position, direction, and group from the
+    QMC Low-Discrepency Sequence. Particles are added to the bank_source.
+
+    Particles are prepared as a batch in hybridMC so that we only have to call the
+    low-discprenecy sequence function once for fixed-seed mode or once per sweep
+    for batched mode.
+
+    """
+    hybrid = mcdc["technique"]["hybrid"]
+    sources = mcdc["sources"]
+    # total number of particles
+    N_particle = N_end - N_start
+    mesh = hybrid["mesh"]
+    g = mesh["g"]
+    g_coarse = mesh["g_coarse"]
+    samples = hybrid["samples"]
+
+    # Find which source entry to use for each particle
+    # Compute cumulative probabilities
+    probs = np.array([src["prob"] for src in sources])
+    cum_probs = np.cumsum(probs)
+    cum_probs /= cum_probs[-1]  # Ensure normalization
+    src_idx = 0
+    source = sources[src_idx]
+    # For each n, determine which source entry to use
+    for n in range(N_start, N_end):
+        frac = (n - N_start) / (N_end - N_start)
+        if frac > cum_probs[src_idx]:
+            src_idx += 1
+            source = sources[src_idx]
+
+        # Create new particle
+        P_new_arr = adapt.local_array(1, type_.particle_record)
+        P_new = P_new_arr[0]
+        # assign initial group, time, and rng_seed (not used)
+        # Sample group index according to source["group"] probabilities
+        g_idx = np.random.choice(len(source["group"]), p=source["group"])
+        P_new["g"] = g_idx
+        # Find the coarse group index for the current fine group
+        for i in range(len(g_coarse) - 1):
+            if g_coarse[i] <= g[g_idx] < g_coarse[i + 1]:
+                P_new["hybrid"]["g_coarse"] = i
+                break
+
+        P_new["t"] = hybrid_sample_position(
+            source["time"][0], source["time"][1], samples[n, 0]
+        )
+        # P_new["rng_seed"] = 0
+        # assign direction
+        if source["box"]:
+            P_new["x"] = hybrid_sample_position(
+                source["box_x"][0], source["box_x"][1], samples[n, 1]
+            )
+            P_new["y"] = hybrid_sample_position(
+                source["box_y"][0], source["box_y"][1], samples[n, 2]
+            )
+            P_new["z"] = hybrid_sample_position(
+                source["box_z"][0], source["box_z"][1], samples[n, 3]
+            )
+
+        else:
+            P_new["x"] = source["x"]
+            P_new["y"] = source["y"]
+            P_new["z"] = source["z"]
+
+            # Sample isotropic direction
+        P_new["ux"], P_new["uy"], P_new["uz"] = hybrid_sample_isotropic_direction(
+            samples[n, 4], samples[n, 5]
+        )
+        x, y, z, t, outside = mesh_.structured.get_indices(P_new_arr, mesh)
+
+        P_new["w"] = source["prob"] * hybrid["pt_source_total"] / N_particle
+        # P_new["w"] = P_new["hybrid"]["w"].sum()
+        ta = mesh["t"][0]
+        P_new["hybrid"]["birth_time"] = ta - 1
+        P_new["hybrid"]["p_scatter"] = 0
+
+        # add to source bank
+        if P_new["w"] > 0:
+            adapt.add_future(P_new_arr, mcdc)
+        hybrid["samples"][n, 0] = -1  # Avoids resampling
 
 
 @toggle("hybridMC")
@@ -529,7 +621,8 @@ def hybrid_prepare_boundary_particles(N_start, N_end, idx, mcdc):
         P_new["hybrid"]["p_scatter"] = 0
 
         # add to source bank
-        adapt.add_future(P_new_arr, mcdc)
+        if P_new["w"] > 0:
+            adapt.add_future(P_new_arr, mcdc)
         hybrid["samples"][n, 0] = -1  # Avoids resampling
 
 
@@ -675,6 +768,7 @@ def distribute_particles(N_work, mcdc):
     Bdry_y_n = hybrid["boundary_y_neg"]
     Bdry_z_p = hybrid["boundary_z_pos"]
     Bdry_z_n = hybrid["boundary_z_neg"]
+    PT_source = hybrid["pt_source_total"]
 
     vol_space = np.outer(dx, np.outer(dy, dz)).reshape(
         len(dx), len(dy), len(dz)
@@ -724,26 +818,28 @@ def distribute_particles(N_work, mcdc):
             total_bdry_z_neg,
         ]
     )
-    T_total = total_phi_init + total_Q + np.sum(T_B)
+    T_total = total_phi_init + total_Q + np.sum(T_B) + PT_source
 
     # Handle T_total == 0 to avoid division by zero
     if T_total == 0:
         w_Q = 1.0
         w_I = 0.0
         w_B = np.zeros(6)
+        w_P = 0.0
     else:
         # Weight for Q (source)
         w_Q = 0.5 + 0.5 * (total_Q / T_total)
 
         # Normalize weights for I and B, handle denominator == 0
-        denom = total_phi_init + np.sum(T_B)
+        denom = total_phi_init + np.sum(T_B) + PT_source
         if denom == 0:
             w_I = 0.0
             w_B = np.zeros(6)
+            w_P = 0.0
         else:
             w_I = total_phi_init / denom
             w_B = T_B / denom  # vector of 6
-
+            w_P = PT_source / denom
     N_Q = int(round(N_work * w_Q))
 
     # Remaining work
@@ -752,11 +848,12 @@ def distribute_particles(N_work, mcdc):
     # Allocate
     N_I = int(round(N_rest * w_I))
     N_B = np.round(N_rest * w_B).astype(int)  # shape (6,)
+    N_P = int(round(N_rest * w_P))
 
     # Fix rounding drift
-    drift = N_work - (N_Q + N_I + np.sum(N_B))
+    drift = N_work - (N_Q + N_I + N_P + np.sum(N_B))
     N_Q += drift  # or fix most contributing part
-    return N_Q, N_I, N_B
+    return N_Q, N_I, N_B, N_P
 
 
 @toggle("hybridMC")
@@ -1410,7 +1507,7 @@ def hybrid_score_tallies(P_arr, distance, mcdc):
         )
 
     # Score tallies only for particles born before prev_t
-    if P["hybrid"]["birth_time"] < prev_t:
+    if P["hybrid"]["birth_time"] < prev_t or hybrid["n_scatter"] >= INF:
         score_bin["flux"]["bin"][g, t, x, y, z] += flux
         score_bin["effective-scattering"]["bin"][:, t, x, y, z] += eff_scatter
         score_bin["effective-fission"]["bin"][:, t, x, y, z] += eff_fission
@@ -1423,61 +1520,6 @@ def hybrid_score_tallies(P_arr, distance, mcdc):
         if score_list["fission-power"]:
             score_bin["fission-power"]["bin"][:, t, x, y, z] += hybrid_fission_power(
                 flux, material, g
-            )
-
-        # Linear source tilts
-        if score_list["source-x"]:
-            dx = mesh["x"][x + 1] - mesh["x"][x]
-            x_mid = mesh["x"][x] + 0.5 * dx
-            tilt_x = hybrid_linear_tilt(
-                P["ux"],
-                P["x"],
-                dx,
-                x_mid,
-                mesh["y"][y + 1] - mesh["y"][y],
-                mesh["z"][z + 1] - mesh["z"][z],
-                w,
-                distance,
-                SigmaT,
-            )
-            score_bin["source-x"]["bin"][:, t, x, y, z] += hybrid_effective_source(
-                tilt_x, mat_id, mcdc
-            )
-
-        if score_list["source-y"]:
-            dy = mesh["y"][y + 1] - mesh["y"][y]
-            y_mid = mesh["y"][y] + 0.5 * dy
-            tilt_y = hybrid_linear_tilt(
-                P["uy"],
-                P["y"],
-                dy,
-                y_mid,
-                mesh["x"][x + 1] - mesh["x"][x],
-                mesh["z"][z + 1] - mesh["z"][z],
-                w,
-                distance,
-                SigmaT,
-            )
-            score_bin["source-y"]["bin"][:, t, x, y, z] += hybrid_effective_source(
-                tilt_y, mat_id, mcdc
-            )
-
-        if score_list["source-z"]:
-            dz = mesh["z"][z + 1] - mesh["z"][z]
-            z_mid = mesh["z"][z] + 0.5 * dz
-            tilt_z = hybrid_linear_tilt(
-                P["uz"],
-                P["z"],
-                dz,
-                z_mid,
-                mesh["x"][x + 1] - mesh["x"][x],
-                mesh["y"][y + 1] - mesh["y"][y],
-                w,
-                distance,
-                SigmaT,
-            )
-            score_bin["source-z"]["bin"][:, t, x, y, z] += hybrid_effective_source(
-                tilt_z, mat_id, mcdc
             )
 
 

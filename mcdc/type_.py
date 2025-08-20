@@ -1357,6 +1357,7 @@ def make_type_technique(input_deck):
         ("sample_method", str_),
         ("mode", str_),
         ("n_scatter", int64),
+        ("pt_source_total", float64),
     ]
     n_directions = card["hybrid"]["SN"]["n_directions"]
     n_ordinates = card["hybrid"]["SN"]["n_ordinates"]

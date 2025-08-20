@@ -7,16 +7,16 @@ from scipy.integrate import quad
 # =============================================================================
 
 # Scattering ratio
-c = 1.1
+c = 1.0
 i = complex(0, 1)
 
 # Spatial grid
 J = 201
-x = np.linspace(-20.5, 20.5, J + 1)
+x = np.linspace(-1, 1, J + 1)
 
 # Time grid
 K = 20
-t = np.linspace(0.0, 20.0, K + 1)
+t = np.linspace(0.0, 1, K + 1)
 
 
 def integrand(u, eta, t):
@@ -30,7 +30,7 @@ def integrand(u, eta, t):
 
 
 def phi(x, t):
-    if t == 0.0 or abs(x) >= t:
+    if t <= 1e-8 or abs(x) >= t - 1e-8:
         return 0.0
     eta = x / t
     integral = quad(integrand, 0.0, np.pi, args=(eta, t))[0]
@@ -38,7 +38,7 @@ def phi(x, t):
 
 
 def phi_t(t, x):
-    if t == 0.0 or abs(x) >= t:
+    if t <= 1e-8 or abs(x) >= t - 1e-8:
         return 0.0
     eta = x / t
     integral = quad(integrand, 0.0, np.pi, args=(eta, t))[0]
@@ -59,7 +59,8 @@ for k in range(K):
         t0 = t[k]
         t1 = t[k + 1]
         dt = t1 - t0
-        phi_avg[k, j] = quad(phiX, x0, x1, args=(t0, t1))[0] / dx / dt
+        phi_avg[k, j] = phi_t(t0, x0)
+        # phi_avg[k, j] = quad(phiX, x0, x1, args=(t0, t1))[0] / dx / dt
 
 for j in range(J + 1):
     for k in range(K):
@@ -70,3 +71,11 @@ for j in range(J + 1):
 phi_avg = np.nan_to_num(phi_avg)
 
 np.savez("reference.npz", x=x, t=t, phi=phi_avg)
+import matplotlib.pyplot as plt
+
+plt.plot(x[:-1], phi_avg[-1, :])
+plt.xlabel("x")
+plt.ylabel("phi_avg at last time step")
+plt.title("Reference Solution at Final Time")
+plt.grid(True)
+plt.show()
