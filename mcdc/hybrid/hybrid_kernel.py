@@ -284,7 +284,7 @@ def hybrid_prepare_domain_particles(N_Q, mcdc):
     """
     hybrid = mcdc["technique"]["hybrid"]
     # total number of particles
-    N_particle = mcdc["setting"]["N_particle"]
+    N_particle = N_Q  # mcdc["setting"]["N_particle"]
 
     samples = hybrid["samples"]
     # source
@@ -296,16 +296,43 @@ def hybrid_prepare_domain_particles(N_Q, mcdc):
     Nt = mesh["Nt"]
     Ng = mesh["Ng"]
     # total number of spatial cells
-    N_total = Nt * Nx * Ny * Nz * Ng
-    # outter mesh boundaries for sampling position
-    xa = mesh["x"][0]
-    xb = mesh["x"][-1]
-    ya = mesh["y"][0]
-    yb = mesh["y"][-1]
-    za = mesh["z"][0]
-    zb = mesh["z"][-1]
+    # Find nonzero indices in Q to determine bounds
+    nonzero = np.argwhere(Q != 0)
+    if nonzero.size == 0:
+        # Fallback to full mesh if Q is all zero
+        xa = mesh["x"][0]
+        xb = mesh["x"][-1]
+        ya = mesh["y"][0]
+        yb = mesh["y"][-1]
+        za = mesh["z"][0]
+        zb = mesh["z"][-1]
+        x_min_idx, x_max_idx = 0, Nx - 1
+        y_min_idx, y_max_idx = 0, Ny - 1
+        z_min_idx, z_max_idx = 0, Nz - 1
+    else:
+        # nonzero indices: [g, t, x, y, z]
+        x_min_idx = np.min(nonzero[:, 2])
+        x_max_idx = np.max(nonzero[:, 2])
+        y_min_idx = np.min(nonzero[:, 3])
+        y_max_idx = np.max(nonzero[:, 3])
+        z_min_idx = np.min(nonzero[:, 4])
+        z_max_idx = np.max(nonzero[:, 4])
+        xa = mesh["x"][x_min_idx]
+        xb = mesh["x"][x_max_idx + 1]
+        ya = mesh["y"][y_min_idx]
+        yb = mesh["y"][y_max_idx + 1]
+        za = mesh["z"][z_min_idx]
+        zb = mesh["z"][z_max_idx + 1]
+
     ta = mesh["t"][0]
     tb = mesh["t"][-1]
+
+    # Number of cells in each dimension between bounds
+    Nx_eff = x_max_idx - x_min_idx + 1
+    Ny_eff = y_max_idx - y_min_idx + 1
+    Nz_eff = z_max_idx - z_min_idx + 1
+
+    N_total = Nt * Ng * Nx_eff * Ny_eff * Nz_eff
     g = mesh["g"]
     g_coarse = mesh["g_coarse"]
 
@@ -322,15 +349,119 @@ def hybrid_prepare_domain_particles(N_Q, mcdc):
                 P_new["hybrid"]["g_coarse"] = i
                 break
 
-        P_new["t"] = hybrid_sample_position(ta, tb, samples[n, 0])
+        P_new["t"] = hybrid_sample_position(ta, tb, samples[n, 1])
         # P_new["rng_seed"] = 0
         # assign direction
-        P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 1])
-        P_new["y"] = hybrid_sample_position(ya, yb, samples[n, 2])
-        P_new["z"] = hybrid_sample_position(za, zb, samples[n, 3])
+        P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 2])
+        P_new["y"] = hybrid_sample_position(ya, yb, samples[n, 3])
+        P_new["z"] = hybrid_sample_position(za, zb, samples[n, 4])
         # Sample isotropic direction
         P_new["ux"], P_new["uy"], P_new["uz"] = hybrid_sample_isotropic_direction(
-            samples[n, 4], samples[n, 5]
+            samples[n, 5], samples[n, 6]
+        )
+        x, y, z, t, outside = mesh_.structured.get_indices(P_new_arr, mesh)
+        q = Q[g_idx, t, x, y, z].copy()
+        dV = hybrid_cell_volume(x, y, z, t, mesh)
+        # Source tilt
+        # hybrid_tilt_source(t, x, y, z, P_new_arr, q, mcdc)
+        # set particle weight
+        P_new["w"] = q * dV * N_total / N_particle
+        # P_new["w"] = P_new["hybrid"]["w"].sum()
+        P_new["hybrid"]["birth_time"] = P_new["t"]
+        P_new["hybrid"]["p_scatter"] = 0
+
+        # add to source bank
+        if P_new["w"] > 0:
+            adapt.add_future(P_new_arr, mcdc)
+
+
+@toggle("hybridMC")
+def hybrid_prepare_domain_particles_backup(N_Q, mcdc):
+    """
+    Create N_particles assigning the position, direction, and group from the
+    QMC Low-Discrepency Sequence. Particles are added to the bank_source.
+
+    Particles are prepared as a batch in hybridMC so that we only have to call the
+    low-discprenecy sequence function once for fixed-seed mode or once per sweep
+    for batched mode.
+
+    """
+    hybrid = mcdc["technique"]["hybrid"]
+    # total number of particles
+    N_particle = N_Q  # mcdc["setting"]["N_particle"]
+
+    samples = hybrid["samples"]
+    # source
+    Q = hybrid["source"]
+    mesh = hybrid["mesh"]
+    Nx = mesh["Nx"]
+    Ny = mesh["Ny"]
+    Nz = mesh["Nz"]
+    Nt = mesh["Nt"]
+    Ng = mesh["Ng"]
+    # total number of spatial cells
+    # Find nonzero indices in Q to determine bounds
+    nonzero = np.argwhere(Q != 0)
+    if nonzero.size == 0:
+        # Fallback to full mesh if Q is all zero
+        xa = mesh["x"][0]
+        xb = mesh["x"][-1]
+        ya = mesh["y"][0]
+        yb = mesh["y"][-1]
+        za = mesh["z"][0]
+        zb = mesh["z"][-1]
+        x_min_idx, x_max_idx = 0, Nx - 1
+        y_min_idx, y_max_idx = 0, Ny - 1
+        z_min_idx, z_max_idx = 0, Nz - 1
+    else:
+        # nonzero indices: [g, t, x, y, z]
+        x_min_idx = np.min(nonzero[:, 2])
+        x_max_idx = np.max(nonzero[:, 2])
+        y_min_idx = np.min(nonzero[:, 3])
+        y_max_idx = np.max(nonzero[:, 3])
+        z_min_idx = np.min(nonzero[:, 4])
+        z_max_idx = np.max(nonzero[:, 4])
+        xa = mesh["x"][x_min_idx]
+        xb = mesh["x"][x_max_idx + 1]
+        ya = mesh["y"][y_min_idx]
+        yb = mesh["y"][y_max_idx + 1]
+        za = mesh["z"][z_min_idx]
+        zb = mesh["z"][z_max_idx + 1]
+
+    ta = mesh["t"][0]
+    tb = mesh["t"][-1]
+
+    # Number of cells in each dimension between bounds
+    Nx_eff = x_max_idx - x_min_idx + 1
+    Ny_eff = y_max_idx - y_min_idx + 1
+    Nz_eff = z_max_idx - z_min_idx + 1
+
+    N_total = Nt * Ng * Nx_eff * Ny_eff * Nz_eff
+    g = mesh["g"]
+    g_coarse = mesh["g_coarse"]
+
+    for n in range(N_Q):
+        # Create new particle
+        P_new_arr = adapt.local_array(1, type_.particle_record)
+        P_new = P_new_arr[0]
+        # assign initial group, time, and rng_seed (not used)
+        g_idx = int(samples[n, 0] * Ng)
+        P_new["g"] = g_idx
+        # Find the coarse group index for the current fine group
+        for i in range(len(g_coarse) - 1):
+            if g_coarse[i] <= g[g_idx] < g_coarse[i + 1]:
+                P_new["hybrid"]["g_coarse"] = i
+                break
+
+        P_new["t"] = hybrid_sample_position(ta, tb, samples[n, 1])
+        # P_new["rng_seed"] = 0
+        # assign direction
+        P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 2])
+        P_new["y"] = hybrid_sample_position(ya, yb, samples[n, 3])
+        P_new["z"] = hybrid_sample_position(za, zb, samples[n, 4])
+        # Sample isotropic direction
+        P_new["ux"], P_new["uy"], P_new["uz"] = hybrid_sample_isotropic_direction(
+            samples[n, 5], samples[n, 6]
         )
         x, y, z, t, outside = mesh_.structured.get_indices(P_new_arr, mesh)
         q = Q[g_idx, t, x, y, z].copy()
@@ -396,19 +527,19 @@ def hybrid_prepare_point_particles(N_start, N_end, mcdc):
                 break
 
         P_new["t"] = hybrid_sample_position(
-            source["time"][0], source["time"][1], samples[n, 0]
+            source["time"][0], source["time"][1], samples[n, 1]
         )
         # P_new["rng_seed"] = 0
         # assign direction
         if source["box"]:
             P_new["x"] = hybrid_sample_position(
-                source["box_x"][0], source["box_x"][1], samples[n, 1]
+                source["box_x"][0], source["box_x"][1], samples[n, 2]
             )
             P_new["y"] = hybrid_sample_position(
-                source["box_y"][0], source["box_y"][1], samples[n, 2]
+                source["box_y"][0], source["box_y"][1], samples[n, 3]
             )
             P_new["z"] = hybrid_sample_position(
-                source["box_z"][0], source["box_z"][1], samples[n, 3]
+                source["box_z"][0], source["box_z"][1], samples[n, 4]
             )
 
         else:
@@ -418,7 +549,7 @@ def hybrid_prepare_point_particles(N_start, N_end, mcdc):
 
             # Sample isotropic direction
         P_new["ux"], P_new["uy"], P_new["uz"] = hybrid_sample_isotropic_direction(
-            samples[n, 4], samples[n, 5]
+            samples[n, 5], samples[n, 6]
         )
         x, y, z, t, outside = mesh_.structured.get_indices(P_new_arr, mesh)
 
@@ -447,7 +578,7 @@ def hybrid_prepare_init_particles(N_start, N_end, mcdc):
     """
     hybrid = mcdc["technique"]["hybrid"]
     # total number of particles
-    N_particle = mcdc["setting"]["N_particle"]
+    N_particle = N_end - N_start
 
     samples = hybrid["samples"]
     # source
@@ -489,12 +620,12 @@ def hybrid_prepare_init_particles(N_start, N_end, mcdc):
         P_new["t"] = ta
         P_new["rng_seed"] = 0
         # assign direction
-        P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 1])
-        P_new["y"] = hybrid_sample_position(ya, yb, samples[n, 2])
-        P_new["z"] = hybrid_sample_position(za, zb, samples[n, 3])
+        P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 2])
+        P_new["y"] = hybrid_sample_position(ya, yb, samples[n, 3])
+        P_new["z"] = hybrid_sample_position(za, zb, samples[n, 4])
         # Sample isotropic direction
         P_new["ux"], P_new["uy"], P_new["uz"] = hybrid_sample_isotropic_direction(
-            samples[n, 4], samples[n, 5]
+            samples[n, 5], samples[n, 6]
         )
         x, y, z, t, outside = mesh_.structured.get_indices(P_new_arr, mesh)
         q = Q[g_idx, x, y, z].copy()
@@ -508,7 +639,8 @@ def hybrid_prepare_init_particles(N_start, N_end, mcdc):
         P_new["hybrid"]["p_scatter"] = 0
 
         # add to source bank
-        adapt.add_future(P_new_arr, mcdc)
+        if P_new["w"] > 0:
+            adapt.add_future(P_new_arr, mcdc)
         hybrid["samples"][n, 0] = -1  # Avoids resampling
 
 
@@ -525,7 +657,7 @@ def hybrid_prepare_boundary_particles(N_start, N_end, idx, mcdc):
     """
     hybrid = mcdc["technique"]["hybrid"]
     # total number of particles
-    N_particle = mcdc["setting"]["N_particle"]
+    N_particle = N_end - N_start
 
     samples = hybrid["samples"]
 
@@ -587,15 +719,15 @@ def hybrid_prepare_boundary_particles(N_start, N_end, idx, mcdc):
                 P_new["hybrid"]["g_coarse"] = coarse_idx
                 break
 
-        P_new["t"] = hybrid_sample_position(ta, tb, samples[n, 0])
+        P_new["t"] = hybrid_sample_position(ta, tb, samples[n, 1])
         P_new["rng_seed"] = 0
         # assign direction
-        P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 1])
-        P_new["y"] = hybrid_sample_position(ya, yb, samples[n, 2])
-        P_new["z"] = hybrid_sample_position(za, zb, samples[n, 3])
+        P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 2])
+        P_new["y"] = hybrid_sample_position(ya, yb, samples[n, 3])
+        P_new["z"] = hybrid_sample_position(za, zb, samples[n, 4])
         # Sample isotropic direction
         P_new["ux"], P_new["uy"], P_new["uz"] = hybrid_sample_boundary_direction(
-            samples[n, 4], samples[n, 5], idx
+            samples[n, 5], samples[n, 6], idx
         )
         x, y, z, t, outside = mesh_.structured.get_indices(P_new_arr, mesh)
 
@@ -662,14 +794,68 @@ def hybrid_reset_particles(mcdc):
     g_coarse = mesh["g_coarse"]
 
     # total number of spatial cells
-    N_total = Nx * Ny * Nz * Nt * Ng
-    # outter mesh boundaries for sampling position
-    xa = mesh["x"][0]
-    xb = mesh["x"][-1]
-    ya = mesh["y"][0]
-    yb = mesh["y"][-1]
-    za = mesh["z"][0]
-    zb = mesh["z"][-1]
+    # Compute the support of Q + eff_collided_flux + eff_uncollided_flux + eff_flux_n_collision
+    # Create boolean support array of shape (Nx, Ny, Nz)
+    # total_support[x,y,z] = 1 if any term is nonzero at [..., x, y, z]
+
+    # Q: (Ng, Nt, Nx, Ny, Nz) -> check if any value is nonzero along (Ng, Nt) axes
+    Q_support = np.any(Q != 0, axis=(0, 1))  # shape (Nx, Ny, Nz)
+
+    # eff_collided_flux: (Ng_coarse, x_deg, y_deg, z_deg, Nx, Ny, Nz)
+    eff_collided_support = np.any(
+        eff_collided_flux != 0, axis=(0, 1, 2, 3)
+    )  # shape (Nx, Ny, Nz)
+
+    # eff_uncollided_flux: (Ng, Nx, Ny, Nz)
+    eff_uncollided_support = np.any(
+        eff_uncollided_flux != 0, axis=0
+    )  # shape (Nx, Ny, Nz)
+
+    # eff_flux_n_collision: (Ng, Nx, Ny, Nz)
+    eff_flux_n_collision_support = np.any(
+        eff_flux_n_collision != 0, axis=0
+    )  # shape (Nx, Ny, Nz)
+
+    total_support = (
+        Q_support
+        | eff_collided_support
+        | eff_uncollided_support
+        | eff_flux_n_collision_support
+    )
+
+    nonzero = np.argwhere(total_support)
+    if nonzero.size == 0:
+        # Fallback to full mesh if all zero
+        xa = mesh["x"][0]
+        xb = mesh["x"][-1]
+        ya = mesh["y"][0]
+        yb = mesh["y"][-1]
+        za = mesh["z"][0]
+        zb = mesh["z"][-1]
+        x_min_idx, x_max_idx = 0, Nx - 1
+        y_min_idx, y_max_idx = 0, Ny - 1
+        z_min_idx, z_max_idx = 0, Nz - 1
+    else:
+        # nonzero indices: [x, y, z]
+        x_min_idx = np.min(nonzero[:, 0])
+        x_max_idx = np.max(nonzero[:, 0])
+        y_min_idx = np.min(nonzero[:, 1])
+        y_max_idx = np.max(nonzero[:, 1])
+        z_min_idx = np.min(nonzero[:, 2])
+        z_max_idx = np.max(nonzero[:, 2])
+        xa = mesh["x"][x_min_idx]
+        xb = mesh["x"][x_max_idx + 1]
+        ya = mesh["y"][y_min_idx]
+        yb = mesh["y"][y_max_idx + 1]
+        za = mesh["z"][z_min_idx]
+        zb = mesh["z"][z_max_idx + 1]
+
+    # Number of cells in each dimension between bounds
+    Nx_eff = x_max_idx - x_min_idx + 1
+    Ny_eff = y_max_idx - y_min_idx + 1
+    Nz_eff = z_max_idx - z_min_idx + 1
+
+    N_total = Ng * Nx_eff * Ny_eff * Nz_eff
     ta = mesh["t"][0]
     tb = mesh["t"][-1]
     t_prev = (mesh["t"][hybrid["time_step_idx"] - 1] - ta) / (tb - ta)
@@ -680,6 +866,8 @@ def hybrid_reset_particles(mcdc):
     ###############
 
     mask = (hybrid["samples"][:, 0] >= t_prev) & (hybrid["samples"][:, 0] < t_curr)
+    # Number of particles to reset in this time step
+    N_particle = np.count_nonzero(mask)
     indices = np.where(mask)[0]
     for n in indices:
         # Create new particle
@@ -749,17 +937,32 @@ def hybrid_reset_particles(mcdc):
         P_new["hybrid"]["p_scatter"] = hybrid["n_scatter"]
 
         # add to source bank
-        adapt.add_source(P_new_arr, mcdc)
+        if P_new["w"] > 0:
+            adapt.add_source(P_new_arr, mcdc)
 
 
 @toggle("hybridMC")
 def distribute_particles(N_work, mcdc):
     hybrid = mcdc["technique"]["hybrid"]
     mesh = hybrid["mesh"]
-    dt = np.diff(mesh["t"])
-    dx = np.diff(mesh["x"])
-    dy = np.diff(mesh["y"])
-    dz = np.diff(mesh["z"])
+
+    # Compute mesh spacings, handling INF/-INF boundaries
+    def safe_diff(arr):
+        diff = np.diff(arr)
+        for i in range(len(diff)):
+            if (
+                arr[i] == INF
+                or arr[i] == -INF
+                or arr[i + 1] == INF
+                or arr[i + 1] == -INF
+            ):
+                diff[i] = 1
+        return diff
+
+    dt = safe_diff(mesh["t"])
+    dx = safe_diff(mesh["x"])
+    dy = safe_diff(mesh["y"])
+    dz = safe_diff(mesh["z"])
     Q = hybrid["source"]
     Phi_init = hybrid["phi0"]
     Bdry_x_p = hybrid["boundary_x_pos"]

@@ -1260,7 +1260,7 @@ def make_type_technique(input_deck):
         mesh, Nx, Ny, Nz, Nt, Nmu, N_azi = make_type_mesh_(card["hybrid"]["mesh"])
         Ng = G
         Ng_coarse = G_coarse
-        N_dim = 6  # group, x, y, z, mu, phi
+        N_dim = 7  # group, x, y, z, mu, phi
         mesh = into_dtype(
             [
                 ("x", float64, (Nx + 1,)),
