@@ -31,11 +31,11 @@ def samples_init(mcdc):
     N_start = mcdc["mpi_work_start"]
     if mcdc["technique"]["hybrid"]["sample_method"] == "halton":
         samples = halton(N, dim, skip=N_start)
-        samples = samples[samples[:, 0].argsort()]
+        # samples = samples[samples[:, 0].argsort()]
         mcdc["technique"]["hybrid"]["samples"] = samples
     if mcdc["technique"]["hybrid"]["sample_method"] == "random":
         samples = random(N, dim)
-        samples = samples[samples[:, 0].argsort()]
+        # samples = samples[samples[:, 0].argsort()]
         mcdc["technique"]["hybrid"]["samples"] = samples
 
 
@@ -263,7 +263,7 @@ def hybrid_prepare_particles(mcdc):
         hybrid_prepare_init_particles(N_Q, N_Q + N_I, mcdc)
     if N_P > 0:
         hybrid_prepare_point_particles(N_Q + N_I, N_Q + N_I + N_P, mcdc)
-        N_start = N_Q + N_I + N_P
+    N_start = N_Q + N_I + N_P
     for i in range(6):
         if N_B[i] > 0:
             N_end = N_start + N_B[i]
@@ -733,16 +733,16 @@ def hybrid_prepare_boundary_particles(N_start, N_end, idx, mcdc):
 
         if idx in [4, 5]:
             q = Q[g_idx, t, x, y].copy()
-            # total number of spatial cells
-            N_total = Nx * Ny * Nt
+            # total number of spatial cells (include Ng for uniform energy sampling)
+            N_total = Nx * Ny * Nt * Ng
         elif idx in [2, 3]:
             q = Q[g_idx, t, x, z].copy()
-            # total number of spatial cells
-            N_total = Nx * Nz * Nt
+            # total number of spatial cells (include Ng for uniform energy sampling)
+            N_total = Nx * Nz * Nt * Ng
         elif idx in [0, 1]:
             q = Q[g_idx, t, y, z].copy()
-            # total number of spatial cells
-            N_total = Ny * Nz * Nt
+            # total number of spatial cells (include Ng for uniform energy sampling)
+            N_total = Ny * Nz * Nt * Ng
         dV = hybrid_boundary_volume(x, y, z, t, idx, mesh)
         # Source tilt
         # hybrid_tilt_source(t, x, y, z, P_new_arr, q, mcdc)
@@ -1825,7 +1825,8 @@ def hybrid_effective_scattering(phi, mat_id, mcdc, g=0):
 
     if np.isscalar(phi):
         # Scalar phi: use group g
-        S_s = chi_s[:, g] * SigmaS[g] * phi
+        # chi_s[g, :] gives prob of scattering FROM group g TO each output group
+        S_s = chi_s[g, :] * SigmaS[g] * phi
     else:
         # Vector phi: sum over all groups
         S_s = np.sum(chi_s * SigmaS * phi, axis=1)
