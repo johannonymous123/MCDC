@@ -121,6 +121,8 @@ def hybrid_preprocess(mcdc):
     eigenmode = mcdc["setting"]["mode_eigenvalue"]
     # generate material index
     hybrid_generate_material_idx(mcdc)
+    # detect boundary conditions at mesh faces
+    hybrid_generate_boundary_bc(mcdc)
     if hybrid["source"].all() == 0.0:
         # use material index to generate a first guess for the source
         hybrid_prepare_source(mcdc)
@@ -184,6 +186,78 @@ def hybrid_generate_material_idx(mcdc):
                     mcdc["technique"]["hybrid"]["material_idx"][t, i, j, k] = P_temp[
                         "material_ID"
                     ]
+
+
+@toggle("hybridMC")
+def hybrid_generate_boundary_bc(mcdc):
+    """
+    Detect boundary conditions at the 6 faces of the hybrid mesh domain.
+    Iterates over all surfaces and checks which ones are at the mesh boundaries.
+    For plane-x surfaces: x_position = -J
+    For plane-y surfaces: y_position = -J
+    For plane-z surfaces: z_position = -J
+    """
+    from mcdc.constant import (
+        BC_VACUUM,
+        SURFACE_PLANE_X,
+        SURFACE_PLANE_Y,
+        SURFACE_PLANE_Z,
+        COINCIDENCE_TOLERANCE,
+    )
+
+    mesh = mcdc["technique"]["hybrid"]["mesh"]
+    sn = mcdc["technique"]["hybrid"]["SN"]
+
+    # Default all BCs to vacuum
+    sn["bc_x_low"] = BC_VACUUM
+    sn["bc_x_high"] = BC_VACUUM
+    sn["bc_y_low"] = BC_VACUUM
+    sn["bc_y_high"] = BC_VACUUM
+    sn["bc_z_low"] = BC_VACUUM
+    sn["bc_z_high"] = BC_VACUUM
+
+    # Mesh boundary coordinates
+    x_low = mesh["x"][0]
+    x_high = mesh["x"][-1]
+    y_low = mesh["y"][0]
+    y_high = mesh["y"][-1]
+    z_low = mesh["z"][0]
+    z_high = mesh["z"][-1]
+
+    # Tolerance for matching surface position to mesh boundary
+    tol = COINCIDENCE_TOLERANCE
+
+    # Iterate over all surfaces
+    N_surface = len(mcdc["surfaces"])
+    for i in range(N_surface):
+        surface = mcdc["surfaces"][i]
+        surface_type = surface["type"]
+        bc = surface["BC"]
+
+        # Surface types are bitflags - use bitwise AND to check
+        # For plane-x surfaces: position = -J
+        if surface_type & SURFACE_PLANE_X:
+            pos = -surface["J"]
+            if abs(pos - x_low) < tol:
+                sn["bc_x_low"] = bc
+            elif abs(pos - x_high) < tol:
+                sn["bc_x_high"] = bc
+
+        # For plane-y surfaces: position = -J
+        elif surface_type & SURFACE_PLANE_Y:
+            pos = -surface["J"]
+            if abs(pos - y_low) < tol:
+                sn["bc_y_low"] = bc
+            elif abs(pos - y_high) < tol:
+                sn["bc_y_high"] = bc
+
+        # For plane-z surfaces: position = -J
+        elif surface_type & SURFACE_PLANE_Z:
+            pos = -surface["J"]
+            if abs(pos - z_low) < tol:
+                sn["bc_z_low"] = bc
+            elif abs(pos - z_high) < tol:
+                sn["bc_z_high"] = bc
 
 
 @toggle("hybridMC")
@@ -733,16 +807,16 @@ def hybrid_prepare_boundary_particles(N_start, N_end, idx, mcdc):
 
         if idx in [4, 5]:
             q = Q[g_idx, t, x, y].copy()
-            # total number of spatial cells (include Ng for uniform energy sampling)
-            N_total = Nx * Ny * Nt * Ng
+            # total number of spatial cells
+            N_total = Nx * Ny * Nt
         elif idx in [2, 3]:
             q = Q[g_idx, t, x, z].copy()
-            # total number of spatial cells (include Ng for uniform energy sampling)
-            N_total = Nx * Nz * Nt * Ng
+            # total number of spatial cells
+            N_total = Nx * Nz * Nt
         elif idx in [0, 1]:
             q = Q[g_idx, t, y, z].copy()
-            # total number of spatial cells (include Ng for uniform energy sampling)
-            N_total = Ny * Nz * Nt * Ng
+            # total number of spatial cells
+            N_total = Ny * Nz * Nt
         dV = hybrid_boundary_volume(x, y, z, t, idx, mesh)
         # Source tilt
         # hybrid_tilt_source(t, x, y, z, P_new_arr, q, mcdc)
@@ -1108,6 +1182,86 @@ def ordinates_init(mcdc):
                 ]
             )
         sn["ordinates"] = ordinates[work_start : work_start + work_size, :]
+
+    # Build ordinate reflection mappings for reflective BCs
+    ordinates_init_reflection_maps(mcdc)
+
+
+@toggle("hybridMC")
+def ordinates_init_reflection_maps(mcdc):
+    """
+    Build reflection mappings for each direction.
+    For x-reflection: find ordinate j such that Omega_x(j) = -Omega_x(i)
+    and Omega_y(j) = Omega_y(i), Omega_z(j) = Omega_z(i)
+
+    For 1D (shape[1]==2): ordinates[:,0] is mu (x-direction), symmetric around 0
+    For 2D (shape[1]==3): ordinates[:,0] is Omega_x, ordinates[:,1] is Omega_y
+    For 3D (shape[1]==4): ordinates[:,0] is Omega_x, [:,1] is Omega_y, [:,2] is Omega_z
+    """
+    sn = mcdc["technique"]["hybrid"]["SN"]
+    ordinates = sn["ordinates"]
+    n_ord = sn["n_directions"]
+    shape = ordinates.shape
+
+    # Initialize to identity (self-reflection) as fallback
+    for i in range(n_ord):
+        sn["reflect_x"][i] = i
+        sn["reflect_y"][i] = i
+        sn["reflect_z"][i] = i
+
+    tol = 1e-10
+
+    if shape[1] == 2:
+        # 1D: only x-direction, ordinates[:,0] = mu
+        # For Gauss-Legendre, nodes are symmetric: if mu[i] exists, -mu[i] also exists
+        for i in range(n_ord):
+            mu_i = ordinates[i, 0]
+            for j in range(n_ord):
+                mu_j = ordinates[j, 0]
+                if abs(mu_j + mu_i) < tol:  # mu_j = -mu_i
+                    sn["reflect_x"][i] = j
+                    break
+
+    elif shape[1] == 3:
+        # 2D: ordinates[:,0] = Omega_x, ordinates[:,1] = Omega_y
+        for i in range(n_ord):
+            ox_i, oy_i = ordinates[i, 0], ordinates[i, 1]
+            for j in range(n_ord):
+                ox_j, oy_j = ordinates[j, 0], ordinates[j, 1]
+                # X-reflection: Omega_x -> -Omega_x, Omega_y unchanged
+                if abs(ox_j + ox_i) < tol and abs(oy_j - oy_i) < tol:
+                    sn["reflect_x"][i] = j
+                # Y-reflection: Omega_y -> -Omega_y, Omega_x unchanged
+                if abs(ox_j - ox_i) < tol and abs(oy_j + oy_i) < tol:
+                    sn["reflect_y"][i] = j
+
+    elif shape[1] == 4:
+        # 3D: ordinates[:,0] = Omega_x, [:,1] = Omega_y, [:,2] = Omega_z
+        for i in range(n_ord):
+            ox_i, oy_i, oz_i = ordinates[i, 0], ordinates[i, 1], ordinates[i, 2]
+            for j in range(n_ord):
+                ox_j, oy_j, oz_j = ordinates[j, 0], ordinates[j, 1], ordinates[j, 2]
+                # X-reflection
+                if (
+                    abs(ox_j + ox_i) < tol
+                    and abs(oy_j - oy_i) < tol
+                    and abs(oz_j - oz_i) < tol
+                ):
+                    sn["reflect_x"][i] = j
+                # Y-reflection
+                if (
+                    abs(ox_j - ox_i) < tol
+                    and abs(oy_j + oy_i) < tol
+                    and abs(oz_j - oz_i) < tol
+                ):
+                    sn["reflect_y"][i] = j
+                # Z-reflection
+                if (
+                    abs(ox_j - ox_i) < tol
+                    and abs(oy_j - oy_i) < tol
+                    and abs(oz_j + oz_i) < tol
+                ):
+                    sn["reflect_z"][i] = j
 
 
 @toggle("hybridMC")

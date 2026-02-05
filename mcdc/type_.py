@@ -1400,6 +1400,18 @@ def make_type_technique(input_deck):
                 (Ng_coarse, x_deg + 1, y_deg + 1, z_deg + 1, Nx, Ny, Nz),
             )
         ]
+        # Boundary condition types for each mesh boundary (detected at runtime)
+        sn_list += [("bc_x_low", int64)]
+        sn_list += [("bc_x_high", int64)]
+        sn_list += [("bc_y_low", int64)]
+        sn_list += [("bc_y_high", int64)]
+        sn_list += [("bc_z_low", int64)]
+        sn_list += [("bc_z_high", int64)]
+        # Ordinate reflection mappings for reflective BCs
+        # reflect_x[i] = j means ordinate j has Omega_x = -Omega_x of ordinate i
+        sn_list += [("reflect_x", int64, (n_directions,))]
+        sn_list += [("reflect_y", int64, (n_directions,))]
+        sn_list += [("reflect_z", int64, (n_directions,))]
 
     sn = into_dtype(sn_list)
     hybrid_list += [("SN", sn)]

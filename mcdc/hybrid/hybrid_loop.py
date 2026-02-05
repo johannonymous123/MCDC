@@ -467,6 +467,16 @@ def hybrid_time_step(mcdc):
     current_time_idx = mcdc["technique"]["hybrid"]["time_step_idx"]
     n_scatter = mcdc["technique"]["hybrid"]["n_scatter"]
     print(f"\n Time step {current_time_idx} \n")
+
+    # Pure S_N mode: skip MC and relabeling
+    if n_scatter < 0:
+        print("Pure S_N mode: \n")
+        kernel.distribute_work(n_directions, mcdc)
+        hybrid_pure_SN_sweep(mcdc)
+        kernel.distribute_work(n_particles, mcdc)
+        return
+
+    # Standard hybrid MC/S_N mode
     print("MC: \n")
     hybrid_particle_sweep(mcdc)
     if n_scatter < INF:
@@ -532,6 +542,103 @@ def hybrid_SN_sweep(mcdc):
 
         iterate = err > hybrid["tol"] and iterations < hybrid["iterations_max"]
     print(f"\n SN converged in {iterations} iterations \n")
+
+
+@njit
+def hybrid_pure_SN_sweep(mcdc):
+    """
+    Pure S_N sweep without MC. Used when n_scatter < 0.
+    Feeds the fixed source directly to S_N and records results.
+    """
+    hybrid = mcdc["technique"]["hybrid"]
+    mesh = hybrid["mesh"]
+    Nx = mesh["Nx"]
+    Ny = mesh["Ny"]
+    Nz = mesh["Nz"]
+    Ng = mesh["Ng"]
+    Ng_coarse = mesh["Ng_coarse"]
+
+    # Initialize S_N arrays
+    hybrid["SN"]["flux_n_collisions"].fill(0.0)
+    hybrid["SN"]["uncollided_flux"].fill(0.0)
+    hybrid["SN"]["collided_flux"].fill(0.0)
+    hybrid["SN"]["coef"].fill(0.0)
+
+    # Feed fixed source directly to flux_n_collisions (the S_N source term)
+    # fixed_source has shape (Ng, Nt, Nx, Ny, Nz), we use t=0 for steady-state
+    # flux_n_collisions has shape (Ng, Nx, Ny, Nz)
+    # We need to condense from fine groups to coarse groups
+    fixed_source = hybrid["fixed_source"]
+    g = mesh["g"]
+    g_coarse = mesh["g_coarse"]
+
+    # Condense fixed source to coarse groups for S_N
+    for x in range(Nx):
+        for y in range(Ny):
+            for z in range(Nz):
+                for g_fine in range(Ng):
+                    # Find coarse group for this fine group
+                    for g_c in range(Ng_coarse):
+                        if g_coarse[g_c] <= g[g_fine] < g_coarse[g_c + 1]:
+                            # Add to flux_n_collisions (used as source in solve_SN)
+                            hybrid["SN"]["flux_n_collisions"][g_fine, x, y, z] = (
+                                fixed_source[g_fine, 0, x, y, z]
+                            )
+                            break
+
+    # Run the S_N iteration to convergence
+    iterate = True
+    iterations = 0
+    while iterate:
+        iterations += 1
+        err = single_SN_sweep(mcdc)
+        kernel.allreduce_array(hybrid["SN"]["collided_flux"])
+        iterate = err > hybrid["tol"] and iterations < hybrid["iterations_max"]
+
+    print(f"\n Pure S_N converged in {iterations} iterations \n")
+
+    # Record S_N results to output tallies
+    hybrid_record_SN_flux(mcdc)
+
+
+@njit
+def hybrid_record_SN_flux(mcdc):
+    """
+    Record S_N flux results to the hybrid output tallies.
+    Contracts DG coefficients with angular weights to get scalar flux.
+    """
+    hybrid = mcdc["technique"]["hybrid"]
+    mesh = hybrid["mesh"]
+    ordinates = hybrid["SN"]["ordinates"]
+    coef = hybrid["SN"]["coef"]
+    Nx = mesh["Nx"]
+    Ny = mesh["Ny"]
+    Nz = mesh["Nz"]
+    Ng = mesh["Ng"]
+    Ng_coarse = mesh["Ng_coarse"]
+    g = mesh["g"]
+    g_coarse = mesh["g_coarse"]
+
+    # Contract DG coefficients with angular weights to get scalar flux
+    # coef shape: (Ng_coarse, x_deg, y_deg, z_deg, Nx, Ny, Nz, n_ordinates)
+    # ordinates shape: (n_ordinates, n_directions + 1) where last column is weight
+    # Result: scalar flux (Ng_coarse, x_deg, y_deg, z_deg, Nx, Ny, Nz)
+    flux_coarse = np.tensordot(coef, ordinates[:, -1], axes=([-1], [0]))
+
+    # Cell-averaged flux is the (0,0,0) DG coefficient
+    # Record to fine group flux tally, expanding coarse groups
+    for x in range(Nx):
+        for y in range(Ny):
+            for z in range(Nz):
+                for g_fine in range(Ng):
+                    # Find coarse group for this fine group
+                    for g_c in range(Ng_coarse):
+                        if g_coarse[g_c] <= g[g_fine] < g_coarse[g_c + 1]:
+                            # Cell average is the (0,0,0) coefficient
+                            hybrid["score"]["flux"]["bin"][g_fine, 0, x, y, z] = (
+                                flux_coarse[g_c, 0, 0, 0, x, y, z]
+                            )
+                            break
 
 
 @njit
@@ -744,72 +851,109 @@ def solve_SN(Omega, i_ordinates, x, y, z, mcdc):
 
 @njit
 def downstream_coef(x, y, z, i_ordinates, signs, mcdc):
-    # Vacuum boundaries, reflective not done yet
-    vacuum = True
+    # Boundary conditions: check detected BCs at mesh faces
+    # signs[i] > 0 means sweeping in positive direction (Omega_i > 0)
+    # signs[i] < 0 means sweeping in negative direction (Omega_i < 0)
     mesh = mcdc["technique"]["hybrid"]["mesh"]
+    sn = mcdc["technique"]["hybrid"]["SN"]
 
-    if x == 0 or x == mesh["Nx"] - 1:
-        if vacuum:
-            down_x = np.zeros_like(
-                mcdc["technique"]["hybrid"]["SN"]["coef"][
-                    :, :, :, :, x, y, z, i_ordinates
-                ]
-            )
-        else:
-            tensor_x = mcdc["technique"]["hybrid"]["SN"]["tensor_x"][:, :, 0, 1]
+    # X direction boundary check
+    # At x=0: incoming if signs[0] > 0 (particle coming from left, Omega_x > 0)
+    # At x=Nx-1: incoming if signs[0] < 0 (particle coming from right, Omega_x < 0)
+    is_x_low_incoming = x == 0 and signs[0] > 0
+    is_x_high_incoming = x == mesh["Nx"] - 1 and signs[0] < 0
+
+    if is_x_low_incoming or is_x_high_incoming:
+        # Determine which BC applies
+        bc = sn["bc_x_low"] if is_x_low_incoming else sn["bc_x_high"]
+
+        if bc == BC_VACUUM:
+            # Vacuum: zero incoming flux
+            down_x = np.zeros_like(sn["coef"][:, :, :, :, x, y, z, i_ordinates])
+        elif bc == BC_REFLECTIVE:
+            # Reflective: incoming flux = outgoing flux from reflected ordinate
+            # The reflected ordinate has Omega_x -> -Omega_x
+            j_reflected = sn["reflect_x"][i_ordinates]
+            # Get the coefficients from the reflected ordinate at this cell
+            coef_reflected = sn["coef"][:, :, :, :, x, y, z, j_reflected]
+            # Apply tensor transformation to evaluate at the boundary
+            # For x_low (signs[0] > 0): reflected ordinate has signs[0] < 0, use tensor index 1
+            # For x_high (signs[0] < 0): reflected ordinate has signs[0] > 0, use tensor index 0
+            tensor_idx = 1 if is_x_low_incoming else 0
+            tensor_x = sn["tensor_x"][:, :, tensor_idx, 1]  # D matrix for boundary
             down_x = np.einsum(
                 "ij,gjkl->gikl",
                 tensor_x,
-                mcdc["technique"]["hybrid"]["SN"]["coef"][
-                    :, :, :, :, x, y, z, i_ordinates
-                ],
-            )
-    else:
-        down_x = mcdc["technique"]["hybrid"]["SN"]["coef"][
-            :, :, :, :, x - signs[0], y, z, i_ordinates
-        ]
-
-    if y == 0 or y == mesh["Ny"] - 1:
-        if vacuum:
-            down_y = np.zeros_like(
-                mcdc["technique"]["hybrid"]["SN"]["coef"][
-                    :, :, :, :, x, y, z, i_ordinates
-                ]
+                coef_reflected,
             )
         else:
-            tensor_y = mcdc["technique"]["hybrid"]["SN"]["tensor_y"][:, :, 0, 1]
+            # Interface or unknown: use tensor operation
+            tensor_x = sn["tensor_x"][:, :, 0, 1]
+            down_x = np.einsum(
+                "ij,gjkl->gikl",
+                tensor_x,
+                sn["coef"][:, :, :, :, x, y, z, i_ordinates],
+            )
+    else:
+        down_x = sn["coef"][:, :, :, :, x - signs[0], y, z, i_ordinates]
+
+    # Y direction boundary check
+    is_y_low_incoming = y == 0 and signs[1] > 0
+    is_y_high_incoming = y == mesh["Ny"] - 1 and signs[1] < 0
+
+    if is_y_low_incoming or is_y_high_incoming:
+        bc = sn["bc_y_low"] if is_y_low_incoming else sn["bc_y_high"]
+
+        if bc == BC_VACUUM:
+            down_y = np.zeros_like(sn["coef"][:, :, :, :, x, y, z, i_ordinates])
+        elif bc == BC_REFLECTIVE:
+            j_reflected = sn["reflect_y"][i_ordinates]
+            coef_reflected = sn["coef"][:, :, :, :, x, y, z, j_reflected]
+            tensor_idx = 1 if is_y_low_incoming else 0
+            tensor_y = sn["tensor_y"][:, :, tensor_idx, 1]
             down_y = np.einsum(
                 "ik,gjkl->gjil",
                 tensor_y,
-                mcdc["technique"]["hybrid"]["SN"]["coef"][
-                    :, :, :, :, x, y, z, i_ordinates
-                ],
-            )
-    else:
-        down_y = mcdc["technique"]["hybrid"]["SN"]["coef"][
-            :, :, :, :, x, y - signs[1], z, i_ordinates
-        ]
-
-    if z == 0 or z == mesh["Nz"] - 1:
-        if vacuum:
-            down_z = np.zeros_like(
-                mcdc["technique"]["hybrid"]["SN"]["coef"][
-                    :, :, :, :, x, y, z, i_ordinates
-                ]
+                coef_reflected,
             )
         else:
-            tensor_z = mcdc["technique"]["hybrid"]["SN"]["tensor_z"][:, :, 0, 1]
+            tensor_y = sn["tensor_y"][:, :, 0, 1]
+            down_y = np.einsum(
+                "ik,gjkl->gjil",
+                tensor_y,
+                sn["coef"][:, :, :, :, x, y, z, i_ordinates],
+            )
+    else:
+        down_y = sn["coef"][:, :, :, :, x, y - signs[1], z, i_ordinates]
+
+    # Z direction boundary check
+    is_z_low_incoming = z == 0 and signs[2] > 0
+    is_z_high_incoming = z == mesh["Nz"] - 1 and signs[2] < 0
+
+    if is_z_low_incoming or is_z_high_incoming:
+        bc = sn["bc_z_low"] if is_z_low_incoming else sn["bc_z_high"]
+
+        if bc == BC_VACUUM:
+            down_z = np.zeros_like(sn["coef"][:, :, :, :, x, y, z, i_ordinates])
+        elif bc == BC_REFLECTIVE:
+            j_reflected = sn["reflect_z"][i_ordinates]
+            coef_reflected = sn["coef"][:, :, :, :, x, y, z, j_reflected]
+            tensor_idx = 1 if is_z_low_incoming else 0
+            tensor_z = sn["tensor_z"][:, :, tensor_idx, 1]
             down_z = np.einsum(
                 "il,gjkl->gjki",
                 tensor_z,
-                mcdc["technique"]["hybrid"]["SN"]["coef"][
-                    :, :, :, :, x, y, z, i_ordinates
-                ],
+                coef_reflected,
+            )
+        else:
+            tensor_z = sn["tensor_z"][:, :, 0, 1]
+            down_z = np.einsum(
+                "il,gjkl->gjki",
+                tensor_z,
+                sn["coef"][:, :, :, :, x, y, z, i_ordinates],
             )
     else:
-        down_z = mcdc["technique"]["hybrid"]["SN"]["coef"][
-            :, :, :, :, x, y, z - signs[2], i_ordinates
-        ]
+        down_z = sn["coef"][:, :, :, :, x, y, z - signs[2], i_ordinates]
 
     return down_x, down_y, down_z
 
