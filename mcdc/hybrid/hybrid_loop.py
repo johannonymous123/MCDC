@@ -89,6 +89,10 @@ def hybrid_simulation(mcdc_arr):
     hybrid = mcdc["technique"]["hybrid"]
     hybrid_kernel.hybrid_preprocess(mcdc)
     hybrid_kernel.samples_init(mcdc)
+    # Distribute work over directions before initializing S_N ordinates
+    # (needed for pure S_N mode where MC phase is skipped)
+    n_directions = hybrid["SN"]["n_directions"]
+    kernel.distribute_work(n_directions, mcdc)
     hybrid_kernel.sn_init(mcdc)
     if hybrid["mode"] == "batched":
         hybrid["iterations_max"] = (
@@ -123,8 +127,9 @@ def source_iteration(mcdc):
     time_steps = hybrid["mesh"]["t"]
     # reset particle bank size
     kernel.set_bank_size(mcdc["bank_source"], 0)
-    # initialize particles with LDS
-    hybrid_kernel.hybrid_prepare_particles(mcdc)
+    # initialize particles with LDS (skip for pure S_N mode)
+    if hybrid["n_scatter"] >= 0:
+        hybrid_kernel.hybrid_prepare_particles(mcdc)
 
     # while not simulation_end:
     for _ in time_steps[:-1]:
@@ -565,33 +570,26 @@ def hybrid_pure_SN_sweep(mcdc):
     hybrid["SN"]["coef"].fill(0.0)
 
     # Feed fixed source directly to flux_n_collisions (the S_N source term)
-    # fixed_source has shape (Ng, Nt, Nx, Ny, Nz), we use t=0 for steady-state
-    # flux_n_collisions has shape (Ng, Nx, Ny, Nz)
-    # We need to condense from fine groups to coarse groups
     fixed_source = hybrid["fixed_source"]
     g = mesh["g"]
     g_coarse = mesh["g_coarse"]
 
-    # Condense fixed source to coarse groups for S_N
     for x in range(Nx):
         for y in range(Ny):
             for z in range(Nz):
                 for g_fine in range(Ng):
-                    # Find coarse group for this fine group
                     for g_c in range(Ng_coarse):
                         if g_coarse[g_c] <= g[g_fine] < g_coarse[g_c + 1]:
-                            # Add to flux_n_collisions (used as source in solve_SN)
                             hybrid["SN"]["flux_n_collisions"][g_fine, x, y, z] = (
                                 fixed_source[g_fine, 0, x, y, z]
                             )
                             break
 
-    # Run the S_N iteration to convergence
     iterate = True
     iterations = 0
     while iterate:
         iterations += 1
-        err = single_SN_sweep(mcdc)
+        err = single_SN_sweep(mcdc, iteration=iterations)
         kernel.allreduce_array(hybrid["SN"]["collided_flux"])
         iterate = err > hybrid["tol"] and iterations < hybrid["iterations_max"]
 
@@ -642,7 +640,9 @@ def hybrid_record_SN_flux(mcdc):
 
 
 @njit
-def single_SN_sweep(mcdc):
+def single_SN_sweep(mcdc, iteration=None):
+    import sys
+
     sn = mcdc["technique"]["hybrid"]["SN"]
     mesh = mcdc["technique"]["hybrid"]["mesh"]
     x_deg = sn["x_degree"]
@@ -656,7 +656,16 @@ def single_SN_sweep(mcdc):
     Ny = mesh["Ny"]
     Nz = mesh["Nz"]
     max_err = 0
+    bar_len = 40
     for i_ordinates in range(n_ord_tot):
+        percent = int(100 * (i_ordinates + 1) / n_ord_tot)
+        filled = int(bar_len * percent / 100)
+        bar = "#" * filled + "-" * (bar_len - filled)
+        iter_str = f" (iteration {iteration})" if iteration is not None else ""
+        sys.stdout.write(
+            f"\rS_N Sweep{iter_str}: Direction {i_ordinates+1}/{n_ord_tot} [{bar}] {percent}%"
+        )
+        sys.stdout.flush()
         index = 0
         omega[3] = ordinates[i_ordinates, -1]
         if x_deg != -1:
@@ -678,7 +687,7 @@ def single_SN_sweep(mcdc):
 
                     err = solve_SN(omega, i_ordinates, x, y, z, mcdc)
                     max_err = max(max_err, err)
-
+    print()  # Newline after sweep
     update_collided_flux(mcdc)
     return max_err
 

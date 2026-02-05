@@ -15,6 +15,7 @@ from mcdc.adapt import toggle
 from mcdc.constant import *
 from mcdc.kernel import (
     allreduce_array,
+    distribute_work,
     move_particle,
 )
 from mcdc.type_ import hybrid_score_list
@@ -1135,6 +1136,9 @@ def distribute_particles(N_work, mcdc):
 
 @toggle("hybridMC")
 def sn_init(mcdc):
+    # Distribute work based on n_directions for ordinate initialization
+    n_directions = mcdc["technique"]["hybrid"]["SN"]["n_directions"]
+    distribute_work(n_directions, mcdc)
     ordinates_init(mcdc)
     tensor_init(mcdc)
 
