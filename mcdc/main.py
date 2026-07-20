@@ -35,6 +35,7 @@ from mcdc.loop import (
 )
 from mcdc.iqmc.iqmc_loop import iqmc_simulation, iqmc_validate_inputs
 from mcdc.hybrid.hybrid_loop import hybrid_simulation, hybrid_validate_inputs
+from mcdc.input_ import _hybrid_autogenerate_coarse_partners
 
 import mcdc.src.geometry as geometry
 
@@ -68,6 +69,18 @@ def run():
         iqmc_validate_inputs(input_deck)
     # if input_deck.technique["hybridMC"]:
     #    hybrid_validate_inputs(input_deck)
+    if input_deck.technique["hybridMC"]:
+        solver = input_deck.technique["hybrid"].get(
+            "fixed_source_solver", "source iteration"
+        )
+        if solver == "gmres":
+            print_warning(
+                "GMRES solver is not implemented for hybrid MC. "
+                "Falling back to source iteration."
+            )
+            input_deck.technique["hybrid"]["fixed_source_solver"] = "source iteration"
+        # Auto-generate coarse partner materials for unpartnered fine materials
+        _hybrid_autogenerate_coarse_partners(input_deck)
 
     data_arr, mcdc_arr = prepare()
     data = data_arr[0]

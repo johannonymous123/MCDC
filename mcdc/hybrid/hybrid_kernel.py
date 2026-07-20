@@ -124,7 +124,7 @@ def hybrid_preprocess(mcdc):
     hybrid_generate_material_idx(mcdc)
     # detect boundary conditions at mesh faces
     hybrid_generate_boundary_bc(mcdc)
-    if hybrid["source"].all() == 0.0:
+    if np.all(hybrid["source"] == 0.0):
         # use material index to generate a first guess for the source
         hybrid_prepare_source(mcdc)
         hybrid_update_source(mcdc)
@@ -940,7 +940,22 @@ def hybrid_reset_particles(mcdc):
     ###############
     ###############
 
-    mask = (hybrid["samples"][:, 0] >= t_prev) & (hybrid["samples"][:, 0] < t_curr)
+    # LDS column layout (must match initial sampling in hybrid_prepare_domain_particles):
+    # col 0 = group, col 1 = time, col 2 = x, col 3 = y, col 4 = z, col 5/6 = direction
+    LDS_COL_GROUP = 0
+    LDS_COL_TIME = 1
+    LDS_COL_X = 2
+    LDS_COL_Y = 3
+    LDS_COL_Z = 4
+    LDS_COL_MU = 5
+    LDS_COL_AZI = 6
+
+    t_prev = (mesh["t"][hybrid["time_step_idx"] - 1] - ta) / (tb - ta)
+    t_curr = (mesh["t"][hybrid["time_step_idx"]] - ta) / (tb - ta)
+
+    mask = (hybrid["samples"][:, LDS_COL_TIME] >= t_prev) & (
+        hybrid["samples"][:, LDS_COL_TIME] < t_curr
+    )
     # Number of particles to reset in this time step
     N_particle = np.count_nonzero(mask)
     indices = np.where(mask)[0]
@@ -948,9 +963,8 @@ def hybrid_reset_particles(mcdc):
         # Create new particle
         P_new_arr = adapt.local_array(1, type_.particle_record)
         P_new = P_new_arr[0]
-        # assign initial group, time, and rng_seed (not used)
-        # assign initial group, time, and rng_seed (not used)
-        g_idx = int(samples[n, 0] * Ng)
+        # assign initial group using same column as initial sampling
+        g_idx = int(hybrid["samples"][n, LDS_COL_GROUP] * Ng)
         P_new["g"] = g_idx
 
         # Find the coarse group index for the current fine group
@@ -959,15 +973,15 @@ def hybrid_reset_particles(mcdc):
                 P_new["hybrid"]["g_coarse"] = coarse_idx
                 break
 
-        P_new["t"] = hybrid_sample_position(ta, tb, samples[n, 0])
+        P_new["t"] = hybrid_sample_position(ta, tb, hybrid["samples"][n, LDS_COL_TIME])
         P_new["rng_seed"] = 0
         # assign direction
-        P_new["x"] = hybrid_sample_position(xa, xb, samples[n, 1])
-        P_new["y"] = hybrid_sample_position(ya, yb, samples[n, 2])
-        P_new["z"] = hybrid_sample_position(za, zb, samples[n, 3])
+        P_new["x"] = hybrid_sample_position(xa, xb, hybrid["samples"][n, LDS_COL_X])
+        P_new["y"] = hybrid_sample_position(ya, yb, hybrid["samples"][n, LDS_COL_Y])
+        P_new["z"] = hybrid_sample_position(za, zb, hybrid["samples"][n, LDS_COL_Z])
         # Sample isotropic direction
         P_new["ux"], P_new["uy"], P_new["uz"] = hybrid_sample_isotropic_direction(
-            samples[n, 4], samples[n, 5]
+            hybrid["samples"][n, LDS_COL_MU], hybrid["samples"][n, LDS_COL_AZI]
         )
         x, y, z, t, outside = mesh_.structured.get_indices(P_new_arr, mesh)
 
@@ -1353,7 +1367,7 @@ def hybrid_cell_volume(x, y, z, t, mesh):
     if (mesh["z"][z] != -INF) and (mesh["z"][z] != INF):
         dz = mesh["z"][z + 1] - mesh["z"][z]
     if (mesh["t"][t] != -INF) and (mesh["t"][t] != INF):
-        dz = mesh["t"][t + 1] - mesh["t"][t]
+        dt = mesh["t"][t + 1] - mesh["t"][t]
 
     dV = dx * dy * dz * dt
     return dV
@@ -1391,7 +1405,7 @@ def hybrid_boundary_volume(x, y, z, t, idx, mesh):
     if (mesh["z"][z] != -INF) and (mesh["z"][z] != INF) and idx < 4:
         dz = mesh["z"][z + 1] - mesh["z"][z]
     if (mesh["t"][t] != -INF) and (mesh["t"][t] != INF):
-        dz = mesh["t"][t + 1] - mesh["t"][t]
+        dt = mesh["t"][t + 1] - mesh["t"][t]
 
     dV = dx * dy * dz * dt
     return dV
@@ -1986,8 +2000,9 @@ def hybrid_effective_scattering(phi, mat_id, mcdc, g=0):
         # chi_s[g, :] gives prob of scattering FROM group g TO each output group
         S_s = chi_s[g, :] * SigmaS[g] * phi
     else:
-        # Vector phi: sum over all groups
-        S_s = np.sum(chi_s * SigmaS * phi, axis=1)
+        # Vector phi: sum over incoming groups (axis=0), consistent with iqmc convention
+        # S_s[g'] = sum_g chi_s[g, g'] * SigmaS[g] * phi[g]  = (chi_s.T @ (SigmaS * phi))
+        S_s = np.dot(chi_s.T, SigmaS * phi)
     return S_s
 
 

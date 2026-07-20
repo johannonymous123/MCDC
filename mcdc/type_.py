@@ -1255,7 +1255,10 @@ def make_type_technique(input_deck):
     hybrid_list = []
     N_particle_hybrid = N_particle
     # Mesh (for qmc source tallies)
-    G_coarse = input_deck.materials[-1].G
+    if card["hybridMC"]:
+        G_coarse = len(card["hybrid"]["mesh"]["g_coarse"]) - 1
+    else:
+        G_coarse = 0
     if card["hybridMC"]:
         mesh, Nx, Ny, Nz, Nt, Nmu, N_azi = make_type_mesh_(card["hybrid"]["mesh"])
         Ng = G
@@ -1370,6 +1373,11 @@ def make_type_technique(input_deck):
     x_deg = card["hybrid"]["SN"]["x_degree"]
     y_deg = card["hybrid"]["SN"]["y_degree"]
     z_deg = card["hybrid"]["SN"]["z_degree"]
+    # Map degree=-1 (inactive dimension) to 0 for allocation purposes,
+    # so that degree+1 never produces a zero-length axis in typed arrays.
+    x_deg_alloc = max(x_deg, 0)
+    y_deg_alloc = max(y_deg, 0)
+    z_deg_alloc = max(z_deg, 0)
 
     sn_list = []
     if card["hybridMC"]:
@@ -1381,23 +1389,40 @@ def make_type_technique(input_deck):
             (
                 "coef",
                 float64,
-                (Ng_coarse, x_deg + 1, y_deg + 1, z_deg + 1, Nx, Ny, Nz, n_directions),
+                (
+                    Ng_coarse,
+                    x_deg_alloc + 1,
+                    y_deg_alloc + 1,
+                    z_deg_alloc + 1,
+                    Nx,
+                    Ny,
+                    Nz,
+                    n_directions,
+                ),
             )
         ]
         sn_list += [("n_directions", int64)]
         sn_list += [
             ("ordinates", float64, (get_work_size(n_directions), directions + 1))
         ]
-        sn_list += [("tensor_x", float64, (x_deg + 1, x_deg + 1, 2, 4))]
-        sn_list += [("tensor_y", float64, (y_deg + 1, y_deg + 1, 2, 4))]
-        sn_list += [("tensor_z", float64, (z_deg + 1, z_deg + 1, 2, 4))]
+        sn_list += [("tensor_x", float64, (x_deg_alloc + 1, x_deg_alloc + 1, 2, 4))]
+        sn_list += [("tensor_y", float64, (y_deg_alloc + 1, y_deg_alloc + 1, 2, 4))]
+        sn_list += [("tensor_z", float64, (z_deg_alloc + 1, z_deg_alloc + 1, 2, 4))]
         sn_list += [("uncollided_flux", float64, (Ng, Nx, Ny, Nz))]
         sn_list += [("flux_n_collisions", float64, (Ng, Nx, Ny, Nz))]
         sn_list += [
             (
                 "collided_flux",
                 float64,
-                (Ng_coarse, x_deg + 1, y_deg + 1, z_deg + 1, Nx, Ny, Nz),
+                (
+                    Ng_coarse,
+                    x_deg_alloc + 1,
+                    y_deg_alloc + 1,
+                    z_deg_alloc + 1,
+                    Nx,
+                    Ny,
+                    Nz,
+                ),
             )
         ]
         # Boundary condition types for each mesh boundary (detected at runtime)

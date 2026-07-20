@@ -2191,3 +2191,164 @@ def reset():
 
 def is_sorted(a):
     return np.all(a[:-1] <= a[1:])
+
+
+# ==============================================================================
+# Hybrid MC: automatic coarse-material partner generation
+# ==============================================================================
+
+
+def _hybrid_autogenerate_coarse_partners(input_deck):
+    """
+    If hybridMC is enabled and g_coarse has fewer groups than g, automatically
+    create a coarse partner material (via group collapsing) for every fine
+    material that does not yet have an explicit partner.
+
+    Explicit user-provided partners always take precedence and are never
+    replaced.
+
+    Parameters
+    ----------
+    input_deck : InputDeck
+        The global input deck (modified in-place).
+    """
+    card = input_deck.technique
+
+    # -------------------------------------------------------------------------
+    # Guard: only run when hybridMC is active and coarsening is requested
+    # -------------------------------------------------------------------------
+    if not card["hybridMC"]:
+        return
+
+    g = np.asarray(card["hybrid"]["mesh"]["g"], dtype=float)
+    g_coarse = np.asarray(card["hybrid"]["mesh"]["g_coarse"], dtype=float)
+
+    Ng = len(g) - 1
+    Ng_coarse = len(g_coarse) - 1
+
+    if Ng_coarse >= Ng:
+        # g_coarse == g (or finer): nothing to do
+        return
+
+    # -------------------------------------------------------------------------
+    # Validate g and g_coarse
+    # -------------------------------------------------------------------------
+    if not np.all(np.diff(g) > 0):
+        print_error(
+            "_hybrid_autogenerate_coarse_partners: " "'g' must be strictly increasing."
+        )
+    if not np.all(np.diff(g_coarse) > 0):
+        print_error(
+            "_hybrid_autogenerate_coarse_partners: "
+            "'g_coarse' must be strictly increasing."
+        )
+    if not np.isclose(g_coarse[0], g[0]) or not np.isclose(g_coarse[-1], g[-1]):
+        print_error(
+            "_hybrid_autogenerate_coarse_partners: "
+            "g_coarse[0] and g_coarse[-1] must equal g[0] and g[-1]."
+        )
+    for gc in g_coarse:
+        if not np.any(np.isclose(gc, g)):
+            print_error(
+                f"_hybrid_autogenerate_coarse_partners: "
+                f"g_coarse boundary {gc} does not coincide with any boundary in g."
+            )
+
+    # -------------------------------------------------------------------------
+    # Build map: coarse bin I -> list of fine bin indices
+    # -------------------------------------------------------------------------
+    fine_in_coarse = []  # fine_in_coarse[I] = array of fine indices inside coarse I
+    for I in range(Ng_coarse):
+        gc_lo = g_coarse[I]
+        gc_hi = g_coarse[I + 1]
+        indices = [
+            j for j in range(Ng) if g[j] >= gc_lo - 1e-14 and g[j + 1] <= gc_hi + 1e-14
+        ]
+        fine_in_coarse.append(np.array(indices, dtype=int))
+
+    width = np.diff(g)  # shape (Ng,)
+
+    # -------------------------------------------------------------------------
+    # Snapshot of materials to iterate (new coarse ones will be appended)
+    # -------------------------------------------------------------------------
+    fine_materials = list(input_deck.materials)
+
+    for fine_mat in fine_materials:
+        # Only process fine-group materials of the right size
+        if fine_mat.G != Ng:
+            continue
+        # Skip if user already provided an explicit partner
+        if getattr(fine_mat, "partner", False):
+            continue
+
+        # ------------------------------------------------------------------
+        # Guard: fission not supported for auto-collapse
+        # ------------------------------------------------------------------
+        if np.any(fine_mat.fission != 0.0):
+            print_error(
+                f"_hybrid_autogenerate_coarse_partners: "
+                f"Material ID={fine_mat.ID} has nonzero fission cross-sections. "
+                f"Automatic fission coarse collapse is not implemented; "
+                f"please provide an explicit coarse partner material."
+            )
+
+        # Guard: non-unity nu_s not supported
+        if not np.allclose(fine_mat.nu_s, 1.0):
+            print_error(
+                f"_hybrid_autogenerate_coarse_partners: "
+                f"Material ID={fine_mat.ID} has nu_s != 1. "
+                f"Automatic coarse collapse for nu_s != 1 is not implemented; "
+                f"please provide an explicit coarse partner material."
+            )
+
+        # ------------------------------------------------------------------
+        # Reconstruct fine differential scattering matrix in input convention:
+        #   S_fine_out_in[g_out, g_in] = chi_s[g_in, g_out] * scatter[g_in]
+        # (internally chi_s is stored transposed relative to input convention)
+        # ------------------------------------------------------------------
+        S_fine_out_in = fine_mat.chi_s.T * fine_mat.scatter[np.newaxis, :]
+        # shape: (Ng, Ng), S_fine_out_in[g_out, g_in]
+
+        # ------------------------------------------------------------------
+        # Collapse to coarse groups
+        # ------------------------------------------------------------------
+        capture_c = np.zeros(Ng_coarse)
+        speed_c = np.zeros(Ng_coarse)
+        scatter_c = np.zeros((Ng_coarse, Ng_coarse))  # [g_out_coarse, g_in_coarse]
+
+        for I in range(Ng_coarse):
+            fine_in = fine_in_coarse[I]
+            w_in = width[fine_in]
+            denom = np.sum(w_in)
+            if denom == 0.0:
+                continue
+
+            # Collapse capture: width-weighted average
+            capture_c[I] = np.sum(w_in * fine_mat.capture[fine_in]) / denom
+
+            # Collapse speed via inverse speed: width-weighted harmonic mean
+            inv_speed_c = np.sum(w_in / fine_mat.speed[fine_in]) / denom
+            speed_c[I] = 1.0 / inv_speed_c
+
+            # Collapse differential scatter
+            for J in range(Ng_coarse):
+                fine_out = fine_in_coarse[J]
+                # Sum S over fine outgoing groups in J, weighted average over fine_in
+                scatter_c[J, I] = (
+                    np.sum(
+                        S_fine_out_in[np.ix_(fine_out, fine_in)] * w_in[np.newaxis, :]
+                    )
+                    / denom
+                )
+
+        # ------------------------------------------------------------------
+        # Create the coarse partner via the public material() constructor.
+        # scatter_c is already [g_out_coarse, g_in_coarse], which is the
+        # input convention expected by material().
+        # ------------------------------------------------------------------
+        material(
+            capture=capture_c,
+            scatter=scatter_c,
+            speed=speed_c,
+            partner=fine_mat,
+        )

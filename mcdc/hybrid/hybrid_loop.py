@@ -84,6 +84,7 @@ def hybrid_simulation(mcdc_arr):
     # by intentionally leaking their memory
     adapt.leak(mcdc_arr)
     mcdc = mcdc_arr[0]
+    n_particles = mcdc["setting"]["N_particle"]
 
     # Preprocessing
     hybrid = mcdc["technique"]["hybrid"]
@@ -94,6 +95,7 @@ def hybrid_simulation(mcdc_arr):
     n_directions = hybrid["SN"]["n_directions"]
     kernel.distribute_work(n_directions, mcdc)
     hybrid_kernel.sn_init(mcdc)
+    kernel.distribute_work(n_particles, mcdc)
     if hybrid["mode"] == "batched":
         hybrid["iterations_max"] = (
             mcdc["setting"]["N_active"] + mcdc["setting"]["N_inactive"] - 1
