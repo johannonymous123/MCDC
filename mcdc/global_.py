@@ -148,6 +148,7 @@ class InputDeck:
                 "tol": 1e-6,
                 "residual": 1.0,
                 "iteration_count": 0,
+                "sn_iteration_count": 0,
                 "iterations_max": 5,
                 "fixed_source": np.zeros([1, 1, 1, 1, 1]),
                 "phi0": np.zeros([1, 1, 1, 1]),

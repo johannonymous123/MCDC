@@ -240,7 +240,11 @@ def make_type_particle(input_deck):
     iqmc_struct = [("w", float64, (G,))]
     hybrid_struct = [
         ("birth_time", float64),
+        ("birth_weight", float64),
         ("p_scatter", uint64),
+        ("mat_scatter", uint64),
+        ("last_material_ID", int64),
+        ("hybridized", bool_),
         ("g_coarse", uint64),  # Coarse group index for hybridMC
     ]
 
@@ -287,7 +291,11 @@ def make_type_particle_record(input_deck):
     iqmc_struct = [("w", float64, (G,))]
     hybrid_struct = [
         ("birth_time", float64),
+        ("birth_weight", float64),
         ("p_scatter", uint64),
+        ("mat_scatter", uint64),
+        ("last_material_ID", int64),
+        ("hybridized", bool_),
         ("g_coarse", uint64),
     ]
 
@@ -1353,6 +1361,7 @@ def make_type_technique(input_deck):
         ("w_min", float64),
         ("residual", float64),
         ("iteration_count", int64),
+        ("sn_iteration_count", int64),
         ("iterations_max", int64),
         ("krylov_restart", int64),
         ("sweep_count", int64),

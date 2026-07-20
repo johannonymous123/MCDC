@@ -1028,7 +1028,12 @@ def get_particle(P_arr, bank, mcdc):
     if mcdc["technique"]["hybridMC"]:
         P["w"] = P_rec["w"]
         P["hybrid"]["birth_time"] = P_rec["hybrid"]["birth_time"]
+        P["hybrid"]["birth_weight"] = P_rec["hybrid"]["birth_weight"]
         P["hybrid"]["p_scatter"] = P_rec["hybrid"]["p_scatter"]
+        P["hybrid"]["mat_scatter"] = P_rec["hybrid"]["mat_scatter"]
+        P["hybrid"]["last_material_ID"] = P_rec["hybrid"]["last_material_ID"]
+        P["hybrid"]["hybridized"] = P_rec["hybrid"]["hybridized"]
+        P["hybrid"]["g_coarse"] = P_rec["hybrid"]["g_coarse"]
 
     P["alive"] = True
 
@@ -1762,7 +1767,12 @@ def copy_recordlike(P_new_arr, P_rec_arr):
     P_new["iqmc"]["w"] = P_rec["iqmc"]["w"]
     # P_new["hybrid"]["w"] = P_rec["hybrid"]["w"]
     P_new["hybrid"]["birth_time"] = P_rec["hybrid"]["birth_time"]
+    P_new["hybrid"]["birth_weight"] = P_rec["hybrid"]["birth_weight"]
     P_new["hybrid"]["p_scatter"] = P_rec["hybrid"]["p_scatter"]
+    P_new["hybrid"]["mat_scatter"] = P_rec["hybrid"]["mat_scatter"]
+    P_new["hybrid"]["last_material_ID"] = P_rec["hybrid"]["last_material_ID"]
+    P_new["hybrid"]["hybridized"] = P_rec["hybrid"]["hybridized"]
+    P_new["hybrid"]["g_coarse"] = P_rec["hybrid"]["g_coarse"]
 
 
 @njit
@@ -1789,6 +1799,12 @@ def copy_particle(P_new_arr, P_arr):
     P_new["iqmc"]["w"] = P["iqmc"]["w"]
     P_new["hybrid"]["w"] = P["hybrid"]["w"]
     P_new["hybrid"]["birth_time"] = P["hybrid"]["birth_time"]
+    P_new["hybrid"]["birth_weight"] = P["hybrid"]["birth_weight"]
+    P_new["hybrid"]["p_scatter"] = P["hybrid"]["p_scatter"]
+    P_new["hybrid"]["mat_scatter"] = P["hybrid"]["mat_scatter"]
+    P_new["hybrid"]["last_material_ID"] = P["hybrid"]["last_material_ID"]
+    P_new["hybrid"]["hybridized"] = P["hybrid"]["hybridized"]
+    P_new["hybrid"]["g_coarse"] = P["hybrid"]["g_coarse"]
 
 
 @njit

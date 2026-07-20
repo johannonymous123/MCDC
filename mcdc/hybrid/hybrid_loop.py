@@ -1,4 +1,5 @@
 import numpy as np
+import sys
 
 from numpy import ascontiguousarray as cga
 from numba import njit, objmode
@@ -373,11 +374,17 @@ def hybrid_loop_particle(P_arr, prog):
         hybrid_step_particle(P_arr, prog)
     if (
         P["hybrid"]["birth_time"] < prev_t
-        or mcdc["technique"]["hybrid"]["n_scatter"] >= INF
+        or (
+            mcdc["technique"]["hybrid"]["n_scatter"] >= INF
+            and hybrid_kernel.HYBRIDIZATION_MODE == hybrid_kernel.HYBRIDIZATION_STANDARD
+        )
     ) and P[
         "alive"
     ]:  # Particles that were around current step won't be relabeled and move on next step
         P["hybrid"]["p_scatter"] = 0
+        P["hybrid"]["mat_scatter"] = 0
+        P["hybrid"]["last_material_ID"] = -1
+        P["hybrid"]["hybridized"] = False
         adapt.add_future(P_arr, mcdc)
 
 
@@ -486,7 +493,10 @@ def hybrid_time_step(mcdc):
     # Standard hybrid MC/S_N mode
     print("MC: \n")
     hybrid_particle_sweep(mcdc)
-    if n_scatter < INF:
+    if (
+        n_scatter < INF
+        or hybrid_kernel.HYBRIDIZATION_MODE != hybrid_kernel.HYBRIDIZATION_STANDARD
+    ):
         kernel.distribute_work(n_directions, mcdc)
         hybrid_SN_sweep(mcdc)
         kernel.distribute_work(n_particles, mcdc)
@@ -548,6 +558,7 @@ def hybrid_SN_sweep(mcdc):
         kernel.allreduce_array(hybrid["SN"]["collided_flux"])
 
         iterate = err > hybrid["tol"] and iterations < hybrid["iterations_max"]
+    hybrid["sn_iteration_count"] += iterations
     print(f"\n SN converged in {iterations} iterations \n")
 
 
@@ -595,6 +606,7 @@ def hybrid_pure_SN_sweep(mcdc):
         kernel.allreduce_array(hybrid["SN"]["collided_flux"])
         iterate = err > hybrid["tol"] and iterations < hybrid["iterations_max"]
 
+    hybrid["sn_iteration_count"] += iterations
     print(f"\n Pure S_N converged in {iterations} iterations \n")
 
     # Record S_N results to output tallies
@@ -643,8 +655,6 @@ def hybrid_record_SN_flux(mcdc):
 
 @njit
 def single_SN_sweep(mcdc, iteration=None):
-    import sys
-
     sn = mcdc["technique"]["hybrid"]["SN"]
     mesh = mcdc["technique"]["hybrid"]["mesh"]
     x_deg = sn["x_degree"]
@@ -664,10 +674,12 @@ def single_SN_sweep(mcdc, iteration=None):
         filled = int(bar_len * percent / 100)
         bar = "#" * filled + "-" * (bar_len - filled)
         iter_str = f" (iteration {iteration})" if iteration is not None else ""
-        sys.stdout.write(
-            f"\rS_N Sweep{iter_str}: Direction {i_ordinates+1}/{n_ord_tot} [{bar}] {percent}%"
-        )
-        sys.stdout.flush()
+        with objmode():
+            sys.stdout.write(
+                f"\rS_N Sweep{iter_str}: Direction {i_ordinates+1}/{n_ord_tot} "
+                f"[{bar}] {percent}%"
+            )
+            sys.stdout.flush()
         index = 0
         omega[3] = ordinates[i_ordinates, -1]
         if x_deg != -1:

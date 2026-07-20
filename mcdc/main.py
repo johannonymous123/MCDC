@@ -2240,6 +2240,10 @@ def generate_hdf5(data, mcdc):
                 f.create_dataset(
                     "hybrid/iteration_count", data=T["hybrid"]["iteration_count"]
                 )
+                f.create_dataset(
+                    "hybrid/sn_iteration_count",
+                    data=T["hybrid"]["sn_iteration_count"],
+                )
                 f.create_dataset("hybrid/sweep_count", data=T["hybrid"]["sweep_count"])
                 f.create_dataset("hybrid/final_residual", data=T["hybrid"]["residual"])
 

@@ -198,14 +198,6 @@ def hybrid_generate_boundary_bc(mcdc):
     For plane-y surfaces: y_position = -J
     For plane-z surfaces: z_position = -J
     """
-    from mcdc.constant import (
-        BC_VACUUM,
-        SURFACE_PLANE_X,
-        SURFACE_PLANE_Y,
-        SURFACE_PLANE_Z,
-        COINCIDENCE_TOLERANCE,
-    )
-
     mesh = mcdc["technique"]["hybrid"]["mesh"]
     sn = mcdc["technique"]["hybrid"]["SN"]
 
@@ -328,6 +320,17 @@ def hybrid_prepare_source(mcdc):
 
 
 @toggle("hybridMC")
+def hybrid_initialize_particle_state(P_arr, hybridized, scatter_count):
+    """Initialize the per-history state used to choose MC or S_N transport."""
+    P = P_arr[0]
+    P["hybrid"]["birth_weight"] = P["w"]
+    P["hybrid"]["p_scatter"] = scatter_count
+    P["hybrid"]["mat_scatter"] = 0
+    P["hybrid"]["last_material_ID"] = -1
+    P["hybrid"]["hybridized"] = hybridized
+
+
+@toggle("hybridMC")
 def hybrid_prepare_particles(mcdc):
     # number of particles this processor will handle
     N_work = mcdc["mpi_work_size"]
@@ -443,7 +446,7 @@ def hybrid_prepare_domain_particles(N_Q, mcdc):
         P_new["w"] = q * dV * N_total / N_particle
         # P_new["w"] = P_new["hybrid"]["w"].sum()
         P_new["hybrid"]["birth_time"] = P_new["t"]
-        P_new["hybrid"]["p_scatter"] = 0
+        hybrid_initialize_particle_state(P_new_arr, False, 0)
 
         # add to source bank
         if P_new["w"] > 0:
@@ -547,7 +550,7 @@ def hybrid_prepare_domain_particles_backup(N_Q, mcdc):
         P_new["w"] = q * dV * N_total / N_particle
         # P_new["w"] = P_new["hybrid"]["w"].sum()
         P_new["hybrid"]["birth_time"] = P_new["t"]
-        P_new["hybrid"]["p_scatter"] = 0
+        hybrid_initialize_particle_state(P_new_arr, False, 0)
 
         # add to source bank
         if P_new["w"] > 0:
@@ -632,7 +635,7 @@ def hybrid_prepare_point_particles(N_start, N_end, mcdc):
         # P_new["w"] = P_new["hybrid"]["w"].sum()
         ta = mesh["t"][0]
         P_new["hybrid"]["birth_time"] = ta - 1
-        P_new["hybrid"]["p_scatter"] = 0
+        hybrid_initialize_particle_state(P_new_arr, False, 0)
 
         # add to source bank
         if P_new["w"] > 0:
@@ -711,7 +714,7 @@ def hybrid_prepare_init_particles(N_start, N_end, mcdc):
         P_new["w"] = q * dV * N_total / N_particle
         # P_new["w"] = P_new["hybrid"]["w"].sum()
         P_new["hybrid"]["birth_time"] = ta - 1
-        P_new["hybrid"]["p_scatter"] = 0
+        hybrid_initialize_particle_state(P_new_arr, False, 0)
 
         # add to source bank
         if P_new["w"] > 0:
@@ -825,7 +828,7 @@ def hybrid_prepare_boundary_particles(N_start, N_end, idx, mcdc):
         P_new["w"] = q * dV * N_total / N_particle
         # P_new["w"] = P_new["hybrid"]["w"].sum()
         P_new["hybrid"]["birth_time"] = ta - 1
-        P_new["hybrid"]["p_scatter"] = 0
+        hybrid_initialize_particle_state(P_new_arr, False, 0)
 
         # add to source bank
         if P_new["w"] > 0:
@@ -1023,7 +1026,7 @@ def hybrid_reset_particles(mcdc):
         P_new["w"] = q * dV * N_total / N_particle
         # P_new["w"] = P_new["hybrid"]["w"].sum()
         P_new["hybrid"]["birth_time"] = ta - 1
-        P_new["hybrid"]["p_scatter"] = hybrid["n_scatter"]
+        hybrid_initialize_particle_state(P_new_arr, True, hybrid["n_scatter"])
 
         # add to source bank
         if P_new["w"] > 0:
@@ -1467,6 +1470,70 @@ def hybrid_sample_group(sample, G):
 # Move to Event
 # =========================================================================
 
+# Select one experimental label rule here. Keep exactly one assignment
+# uncommented; these are intentionally source-level switches, not input options.
+HYBRIDIZATION_STANDARD = 0
+HYBRIDIZATION_MATERIAL = 1
+HYBRIDIZATION_WEIGHT = 2
+HYBRIDIZATION_DIRECTION = 3
+
+HYBRIDIZATION_MODE = HYBRIDIZATION_STANDARD
+# HYBRIDIZATION_MODE = HYBRIDIZATION_MATERIAL
+# HYBRIDIZATION_MODE = HYBRIDIZATION_WEIGHT
+# HYBRIDIZATION_MODE = HYBRIDIZATION_DIRECTION
+
+
+@toggle("hybridMC")
+def hybrid_material_scatter_limit(material_ID, n_scatter_max):
+    """Return the hard-coded local scatter limit for the current material."""
+    # Reed baseline: the central [-2, 2] material is created first and therefore
+    # has material_ID 0. All other materials use the global per-step maximum.
+    if material_ID == 0:
+        return 1
+    return n_scatter_max
+
+
+@toggle("hybridMC")
+def hybrid_update_hybridization_status(P_arr, mcdc):
+    """Update the particle's MC/S_N label at an existing transport event."""
+    P = P_arr[0]
+    hybrid = mcdc["technique"]["hybrid"]
+    n_scatter_max = hybrid["n_scatter"]
+
+    # A newly located material starts a new material-local scatter count.
+    # The total p_scatter count is intentionally not reset here.
+    material_ID = P["material_ID"]
+    if P["hybrid"]["last_material_ID"] == -1:
+        P["hybrid"]["last_material_ID"] = material_ID
+    elif P["hybrid"]["last_material_ID"] != material_ID:
+        P["hybrid"]["last_material_ID"] = material_ID
+        P["hybrid"]["mat_scatter"] = 0
+
+    max_scatter_reached = P["hybrid"]["p_scatter"] >= n_scatter_max
+
+    if HYBRIDIZATION_MODE == HYBRIDIZATION_MATERIAL:
+        # Entering a new material resets mat_scatter, but p_scatter still
+        # enforces the overall per-time-step maximum. This rule may relabel a
+        # particle as MC again on material entry until that maximum is reached.
+        material_limit = hybrid_material_scatter_limit(material_ID, n_scatter_max)
+        hybridized = max_scatter_reached or P["hybrid"]["mat_scatter"] >= material_limit
+    elif HYBRIDIZATION_MODE == HYBRIDIZATION_WEIGHT:
+        # Change label at the first existing event after the particle reaches
+        # 10% of its birth weight.
+        hybridized = (
+            P["hybrid"]["hybridized"]
+            or max_scatter_reached
+            or abs(P["w"]) <= 0.1 * abs(P["hybrid"]["birth_weight"])
+        )
+    elif HYBRIDIZATION_MODE == HYBRIDIZATION_DIRECTION:
+        # Particles moving left are irreversibly hybridized.
+        hybridized = P["hybrid"]["hybridized"] or max_scatter_reached or P["ux"] < 0.0
+    else:
+        # Preserve the current input-driven n_scatter behavior.
+        hybridized = max_scatter_reached
+
+    P["hybrid"]["hybridized"] = hybridized
+
 
 @toggle("hybridMC")
 def hybrid_move_to_event(P_arr, mcdc):
@@ -1500,6 +1567,10 @@ def hybrid_move_to_event(P_arr, mcdc):
     if P["event"] == EVENT_LOST:
         return
 
+    # Update the MC/S_N label after geometry has identified the material and
+    # before this track segment is scored or a collision distance is sampled.
+    hybrid_update_hybridization_status(P_arr, mcdc)
+
     # ==================================================================================
     # Get distances to other events
     # ==================================================================================
@@ -1517,7 +1588,7 @@ def hybrid_move_to_event(P_arr, mcdc):
         P_arr, speed, mcdc["technique"]["hybrid"]["mesh"]
     )
     # Distance to next collision
-    if P["hybrid"]["p_scatter"] < mcdc["technique"]["hybrid"]["n_scatter"]:
+    if not P["hybrid"]["hybridized"]:
         d_collision = distance_to_scatter(P_arr, mcdc)
     else:
         d_collision = INF
@@ -1649,7 +1720,7 @@ def hybrid_continuous_weight_reduction(P_arr, distance, mcdc):
     """
     P = P_arr[0]
     material = mcdc["materials"][P["material_ID"]]
-    if P["hybrid"]["p_scatter"] < mcdc["technique"]["hybrid"]["n_scatter"]:
+    if not P["hybrid"]["hybridized"]:
         Sigma = material["capture"][P["g"]]
     else:
         Sigma = material["total"][P["g"]]
@@ -1672,6 +1743,7 @@ def scattering(P_arr, prog):
     P["ux"], P["uy"], P["uz"] = scatter_direction(P["ux"], P["uy"], P["uz"], mu0, azi)
 
     P["hybrid"]["p_scatter"] += 1
+    P["hybrid"]["mat_scatter"] += 1
 
 
 @toggle("hybridMC")
@@ -1860,7 +1932,7 @@ def hybrid_score_tallies(P_arr, distance, mcdc):
     SigmaA = material["capture"][g]
 
     # Choose which cross section to use for flux
-    Sigma = SigmaA if P["hybrid"]["p_scatter"] < hybrid["n_scatter"] else SigmaT
+    Sigma = SigmaT if P["hybrid"]["hybridized"] else SigmaA
     flux = hybrid_flux(Sigma, w, distance, dV)
 
     # Effective sources
@@ -1871,7 +1943,7 @@ def hybrid_score_tallies(P_arr, distance, mcdc):
     prev_t = mesh["t"][current_t_idx - 1]
 
     # Score SN fluxes
-    if P["hybrid"]["p_scatter"] < hybrid["n_scatter"]:
+    if not P["hybrid"]["hybridized"]:
         if P["hybrid"]["birth_time"] > prev_t:
             hybrid["SN"]["uncollided_flux"][:, x, y, z] += (
                 eff_scatter + eff_fission / k_eff
@@ -1882,7 +1954,10 @@ def hybrid_score_tallies(P_arr, distance, mcdc):
         )
 
     # Score tallies only for particles born before prev_t
-    if P["hybrid"]["birth_time"] < prev_t or hybrid["n_scatter"] >= INF:
+    pure_mc = (
+        hybrid["n_scatter"] >= INF and HYBRIDIZATION_MODE == HYBRIDIZATION_STANDARD
+    )
+    if P["hybrid"]["birth_time"] < prev_t or pure_mc:
         score_bin["flux"]["bin"][g, t, x, y, z] += flux
         score_bin["effective-scattering"]["bin"][:, t, x, y, z] += eff_scatter
         score_bin["effective-fission"]["bin"][:, t, x, y, z] += eff_fission
